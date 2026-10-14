@@ -44,6 +44,8 @@ before(async () => {
       '/single-login': modern.replace('/modern-home','/single-home'),
       '/single-home': `<main><h1>Painel</h1><a href="/details">Detalhes da conta</a></main>`,
       '/details': `<main><h1>Detalhes da conta</h1><button type="button" onclick="openContact()">Adicionar contato</button></main><template id="contact"><h1>Novo contato</h1><form><input name="nome"><button type="submit">Salvar</button><button role="tab" type="button" onclick="document.querySelector('h2').textContent='Endereços'">Endereço</button><h2>Dados gerais</h2></form></template><script>function openContact(){document.querySelector('main').replaceChildren(document.querySelector('#contact').content.cloneNode(true))}</script>`,
+      '/bootstrap-login': modern.replace('/modern-home','/bootstrap-home'),
+      '/bootstrap-home': `<div class="navbar"><ul class="nav navbar-nav"><li class="dropdown"><a class="dropdown-toggle" href="#" onclick="this.nextElementSibling.hidden=false">BI</a><ul class="dropdown-menu" hidden><li><a href="#" onclick="document.querySelector('main').textContent='Painel analítico'">Painel</a></li></ul></li><li class="dropdown"><a class="dropdown-toggle" href="#" onclick="this.nextElementSibling.hidden=false">Financeiro</a><ul class="dropdown-menu" hidden><li><a href="#" onclick="document.querySelector('main').textContent='Contas a pagar'">Contas</a></li></ul></li></ul></div><main>Início</main>`,
       '/forms-login': modern.replace('/modern-home','/forms-home'),
       '/forms-home': `<nav><a href="/forms-home">Cadastros</a></nav><div id="content"><h1>Lista de cadastros</h1><input type="button" value="Novo cliente" onclick="openForm('Cliente')"><a href="#" onclick="openForm('Proposta')">Criar uma nova proposta</a></div><template id="ficha"><div role="dialog"><h1>Ficha</h1><form action="/forbidden-save" method="post"><input name="nome"><button type="submit">Salvar</button><button type="button" onclick="fetch('/forbidden-delete')">Excluir</button><a href="#" data-toggle="tab" onclick="document.querySelector('h2').textContent='Dados gerais'">Geral</a><a href="#" data-toggle="tab" onclick="document.querySelector('h2').textContent='Endereços'">Endereço</a><h2>Dados gerais</h2></form></div></template><script>function openForm(name){const target=document.getElementById('content');target.replaceChildren(document.getElementById('ficha').content.cloneNode(true));target.querySelector('h1').textContent=name}</script>`,
       '/http-login': modern.replace('/modern-home','/http-home'),
@@ -124,6 +126,17 @@ test('crawler moderno mantém capturas sem depender de Leads', async () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
   assert.ok(manifest.records.some(record => record.label === 'Cadastros > Clientes'));
   assert.ok(!manifest.records.some(record => record.label === 'Cadastros'));
+});
+
+test('menus Bootstrap em div navbar são descobertos sem cair em Página inicial', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-navbar-'));
+  const result = await scan({ credentials: credentials('/bootstrap-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 4000 });
+  assert.equal(result.errors, 0);
+  assert.equal(result.records, 2);
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.ok(manifest.records.some(record => record.label === 'BI > Painel' && record.text.includes('Painel analítico')));
+  assert.ok(manifest.records.some(record => record.label === 'Financeiro > Contas' && record.text.includes('Contas a pagar')));
+  assert.ok(!manifest.records.some(record => record.label === 'Página inicial'));
 });
 
 test('falha de login produz diagnóstico sem credenciais, query, fragmento ou valores', async () => {

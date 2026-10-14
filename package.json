@@ -1,6 +1,6 @@
 {
   "name": "documentador-de-sistemas",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Varredura segura e geração de documentação para sistemas web",
   "main": "desktop/main.js",
   "scripts": {

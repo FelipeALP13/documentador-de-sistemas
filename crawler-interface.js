@@ -31,8 +31,8 @@ async function inspect(frame) {
       visible: !!el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden', disabled: !!el.disabled,
       form: el.form ? selector(el.form) : null, href: el.getAttribute('href') || '',
       expanded: el.getAttribute('aria-expanded'),
-      navigation: !!el.closest('nav,[role="navigation"],[role="menu"],[role="menubar"],[id*="menu" i],[class*="menu" i],[class*="sidebar" i]'),
-      primaryNavigation: !!el.closest('nav,header,aside,[role="navigation"],[class*="sidebar" i]'),
+      navigation: !!el.closest('nav,[role="navigation"],[role="menu"],[role="menubar"],[id*="menu" i],[class*="menu" i],[id*="nav" i],[class~="nav" i],[class*="navbar" i],[class*="navigation" i]'),
+      primaryNavigation: !!el.closest('nav,header,aside,[role="navigation"],[id*="nav" i],[class~="nav" i],[class*="navbar" i],[class*="navigation" i],[class*="sidebar" i]'),
       editorControl: !!el.closest('.tox,.tox-tinymce,.mce-container,.mce-tinymce,.cke,.ck-editor,[role="toolbar"],[contenteditable="true"]'),
       contentNavigation: !!el.closest('main,[role="main"],#content,#conteudo,.content')
         && !el.closest('form,table,[role="dialog"],[role="alertdialog"],.modal,.dropdown-menu,.pagination,.tox,.mce-container,.cke,.ck-editor'),
@@ -188,10 +188,12 @@ async function openMenu(page, entry, options = {}) {
       try {
         // Background browser windows can throttle the animation frames used by
         // hover. Native keyboard activation remains available after hit testing.
-        await parent.hover({ timeout: 3000 }).catch(error => {
-          if (error.name !== 'TimeoutError') throw error;
-        });
-        await next.waitFor({ state: 'visible', timeout: 400 }).catch(() => {});
+        for (let hoverAttempt = 0; hoverAttempt < 3 && !(await next.isVisible()); hoverAttempt++) {
+          await parent.hover({ timeout: 3000, force: true }).catch(error => {
+            if (error.name !== 'TimeoutError') throw error;
+          });
+          await next.waitFor({ state: 'visible', timeout: 700 }).catch(() => {});
+        }
         if (!(await next.isVisible())) await activateMenuControl(parent);
         await next.waitFor({ state: 'visible', timeout: 4000 });
       } catch (error) {

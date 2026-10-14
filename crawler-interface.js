@@ -31,7 +31,7 @@ async function inspect(frame) {
       visible: !!el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden', disabled: !!el.disabled,
       form: el.form ? selector(el.form) : null, href: el.getAttribute('href') || '',
       expanded: el.getAttribute('aria-expanded'),
-      navigation: !!el.closest('nav,[role="navigation"],[role="menu"],[role="menubar"],[id*="menu" i],[class*="menu" i],[id*="nav" i],[class~="nav" i],[class*="navbar" i],[class*="navigation" i]'),
+      navigation: !!el.closest('nav,header,[role="navigation"],[role="menu"],[role="menubar"],[id*="menu" i],[class*="menu" i],[id*="nav" i],[class~="nav" i],[class*="navbar" i],[class*="navigation" i]'),
       primaryNavigation: !!el.closest('nav,header,aside,[role="navigation"],[id*="nav" i],[class~="nav" i],[class*="navbar" i],[class*="navigation" i],[class*="sidebar" i]'),
       editorControl: !!el.closest('.tox,.tox-tinymce,.mce-container,.mce-tinymce,.cke,.ck-editor,[role="toolbar"],[contenteditable="true"]'),
       contentNavigation: !!el.closest('main,[role="main"],#content,#conteudo,.content')
@@ -121,15 +121,16 @@ async function discoverMenus(page) {
 async function login(page, credentials, timeout = 30000) {
   const deadline = Date.now() + timeout;
   const submitted = new Set();
-  let usedPassword = false;
+  let usedPassword = false, authenticatedSince = 0;
   while (Date.now() < deadline) {
     const form = await findLogin(page, { strict: usedPassword });
     if (!form) {
       const challenge = await authenticationChallenge(page);
       if (challenge) throw Object.assign(new Error(challenge), { code: 'AUTH_CHALLENGE' });
       if (usedPassword) {
+        authenticatedSince ||= Date.now();
         const menus = await discoverMenus(page);
-        if (menus.some(e => e.visible)) return menus;
+        if (menus.some(e => e.visible && !e.virtual) || Date.now() - authenticatedSince >= 1500) return menus;
       }
       await pause(200);
       continue;
@@ -140,6 +141,7 @@ async function login(page, credentials, timeout = 30000) {
     if (form.password) {
       await form.frame.locator(form.password.selector).fill(credentials.SISTEMA_PASS, { timeout: 15000 });
       usedPassword = true;
+      authenticatedSince = 0;
     }
     submitted.add(fingerprint);
     const control = form.button ? form.frame.locator(form.button.selector) : form.frame.locator((form.password || form.user).selector);

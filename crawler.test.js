@@ -58,6 +58,8 @@ before(async () => {
       '/details': `<main><h1>Detalhes da conta</h1><button type="button" onclick="openContact()">Adicionar contato</button></main><template id="contact"><h1>Novo contato</h1><form><input name="nome"><button type="submit">Salvar</button><button role="tab" type="button" onclick="document.querySelector('h2').textContent='Endereços'">Endereço</button><h2>Dados gerais</h2></form></template><script>function openContact(){document.querySelector('main').replaceChildren(document.querySelector('#contact').content.cloneNode(true))}</script>`,
       '/bootstrap-login': modern.replace('/modern-home','/bootstrap-home'),
       '/bootstrap-home': `<div class="navbar"><ul class="nav navbar-nav"><li class="dropdown"><a class="dropdown-toggle" href="#" onclick="this.nextElementSibling.hidden=false">BI</a><ul class="dropdown-menu" hidden><li><a href="#" onclick="document.querySelector('main').textContent='Painel analítico'">Painel</a></li></ul></li><li class="dropdown"><a class="dropdown-toggle" href="#" onclick="this.nextElementSibling.hidden=false">Financeiro</a><ul class="dropdown-menu" hidden><li><a href="#" onclick="document.querySelector('main').textContent='Contas a pagar'">Contas</a></li></ul></li></ul></div><main>Início</main>`,
+      '/header-login': modern.replace('/modern-home','/header-home'),
+      '/header-home': `<header><ul><li><a href="#" onclick="this.nextElementSibling.hidden=false">BI</a><ul hidden><li><a href="#" onclick="document.querySelector('main').textContent='Painel SGE'">Painel</a></li></ul></li><li><a href="#" onclick="this.nextElementSibling.hidden=false">Financeiro</a><ul hidden><li><a href="#" onclick="document.querySelector('main').textContent='Lançamentos SGE'">Lançamentos</a></li></ul></li></ul></header><main>Início</main>`,
       '/script-login': modern.replace('/modern-home','/script-home'),
       '/script-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Tela disponível';document.querySelector('inexistente').valor=1">Relatório</a></nav><main>Início</main>`,
       '/settings-field-login': modern.replace('/modern-home','/settings-field-home'),
@@ -154,6 +156,17 @@ test('menus Bootstrap em div navbar são descobertos sem cair em Página inicial
   const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
   assert.ok(manifest.records.some(record => record.label === 'BI > Painel' && record.text.includes('Painel analítico')));
   assert.ok(manifest.records.some(record => record.label === 'Financeiro > Contas' && record.text.includes('Contas a pagar')));
+  assert.ok(!manifest.records.some(record => record.label === 'Página inicial'));
+});
+
+test('menus SGE no header são descobertos antes das classes Bootstrap', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-header-'));
+  const result = await scan({ credentials: credentials('/header-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 4000 });
+  assert.equal(result.errors, 0);
+  assert.equal(result.records, 2);
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.ok(manifest.records.some(record => record.label === 'BI > Painel' && record.text.includes('Painel SGE')));
+  assert.ok(manifest.records.some(record => record.label === 'Financeiro > Lançamentos' && record.text.includes('Lançamentos SGE')));
   assert.ok(!manifest.records.some(record => record.label === 'Página inicial'));
 });
 

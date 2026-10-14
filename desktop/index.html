@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+  <title>Documentador de Sistemas</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main>
+    <header><span class="eyebrow">DOCUMENTADOR DE SISTEMAS</span><h1>Varredura e geração do manual</h1><p>Capture as telas às quais sua conta tem acesso e gere o manual a partir das imagens.</p></header>
+    <section>
+      <h2>1. Acesso ao sistema</h2>
+      <div class="grid"><label class="wide">URL do sistema<input id="url" type="url" placeholder="https://sistema.exemplo.com" autocomplete="url"></label><label>Usuário ou e-mail<input id="user" type="text" autocomplete="username"></label><label>Senha<input id="password" type="password" autocomplete="current-password"></label><label>Navegador<select id="browser"><option value="msedge">Microsoft Edge</option><option value="chrome">Google Chrome</option></select></label></div>
+      <p class="hint">O navegador escolhido precisa estar instalado neste computador. A varredura abre formulários, mas não salva cadastros nem envia mensagens.</p>
+    </section>
+    <section>
+      <h2>2. Pasta dos resultados</h2>
+      <div class="folder"><input id="folder" type="text" aria-label="Pasta dos resultados"><button id="choose" type="button" class="secondary">Escolher</button><button id="open" type="button" class="secondary">Abrir pasta</button></div>
+      <p class="hint">Cada varredura cria uma subpasta em <code>artifacts</code>. O manual é salvo na mesma subpasta das imagens.</p>
+    </section>
+    <section>
+      <h2>3. Serviço Gemini da sua equipe</h2>
+      <div class="grid"><label>Endereço do serviço<input id="serviceUrl" type="url" placeholder="https://seu-servico.run.app" autocomplete="url"></label><label>Código de acesso<input id="accessCode" type="password" autocomplete="off" placeholder="Fornecido pelo responsável"></label></div>
+      <p class="hint">A chave Gemini fica somente no serviço da equipe. As imagens são enviadas a ele apenas quando você inicia a geração. O processamento pode demorar e ser retomado após interrupção.</p>
+    </section>
+    <div class="actions"><button id="scan" type="button">Iniciar varredura</button><button id="check" type="button" class="secondary">Conferir imagens</button><button id="generate" type="button" class="secondary">Gerar ou retomar manual</button></div>
+    <section class="progress"><div class="progress-title"><h2>Andamento</h2><span id="status">Pronto</span></div><div id="log" role="log" aria-live="polite"></div></section>
+    <footer>As credenciais do sistema e o código de acesso são usados somente nesta sessão e não são incluídos no aplicativo.</footer>
+  </main>
+  <script src="renderer.js"></script>
+</body>
+</html>

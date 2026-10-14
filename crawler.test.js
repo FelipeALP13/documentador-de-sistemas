@@ -1,0 +1,440 @@
+const { test, before, after, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
+const http = require('node:http');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { chromium } = require('playwright');
+const ui = require('./crawler-interface');
+const { main: scan } = require('./varredura-completa');
+const { waitForInterface } = require('./crawler-ui-state');
+const { walkMenus } = require('./crawler-navigation');
+const { exploreContent, controls: contentControls } = require('./crawler-content');
+const { attachNetworkMonitor } = require('./crawler-network');
+
+let server, base, browser;
+const requests = [];
+const modern = `<form action="/modern-home"><input type="search" placeholder="Pesquisar"><input id="email" autocomplete="username"><input id="senha" type="password"><button type="submit">Entrar</button></form>`;
+const legacy = `<title>Sistema legado</title><form id="frmLogin" action="/frames"><label for="usuario">Usuário</label><input id="usuario" name="usuario_login"><input id="senha" name="senha_login" type="password"><input type="submit" value="Entrar"></form>`;
+before(async () => {
+  server = http.createServer((req, res) => {
+    const route = new URL(req.url, 'http://localhost').pathname;
+    requests.push(route);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    if (route === '/missing.jsp') { res.statusCode = 404; res.end('Not found'); return; }
+    const pages = {
+      '/modern': modern,
+      '/modern-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Painel de vendas'">Visão geral</a><div class="grupo"><a href="#" aria-expanded="false" onclick="this.nextElementSibling.hidden=false;this.setAttribute('aria-expanded','true')">Cadastros</a><div hidden><a href="#" onclick="document.querySelector('main').innerHTML='<h1>Clientes</h1>'">Clientes</a></div></div><a href="/logout">Sair</a></nav><main>Bem-vindo</main>`,
+      '/legacy': legacy,
+      '/nested': `<iframe src="/wrapper"></iframe>`,
+      '/wrapper': `<iframe src="/legacy"></iframe>`,
+      '/frames': `<frameset cols="25%,75%"><frame name="menu" src="/menu"><frame name="conteudo" src="/welcome"></frameset>`,
+      '/menu': `<div id="menuPrincipal"><a href="/clientes.jsp" target="conteudo">Clientes</a><a href="/relatorios.jsp" target="conteudo">Relatórios</a><a href="javascript:location='/logout'">Sair</a><a href="/delete">Excluir</a></div>`,
+      '/welcome': `<h1>Bem-vindo ao sistema legado</h1>`,
+      '/clientes.jsp': `<h1>Cadastro de clientes</h1><p>Conteúdo dentro do frame</p>`,
+      '/relatorios.jsp': `<h1>Relatórios gerenciais</h1><button role="tab">Resumo</button><button role="tab" onclick="document.querySelector('h1').textContent='Detalhes financeiros'">Detalhes</button>`,
+      '/rejected': `<title>Acesso negado</title><form onsubmit="event.preventDefault()"><input name="login"><input type="password"><button>Entrar</button></form>`,
+      '/unusual': `<form action="/modern-home"><input placeholder="Matrícula"><input type="password"><input type="image" alt="Acessar" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></form>`,
+      '/alert-login': modern.replace('/modern-home','/alert-home'),
+      '/alert-home': `<style>.swal2-container,.blockOverlay{position:fixed;inset:0;background:#0008;z-index:10}.swal2-popup{background:white;margin:100px;padding:20px}.blockOverlay{z-index:20}</style><nav><a href="#" onclick="document.querySelector('main').textContent='BI - Operacional';setTimeout(showAlert,100)">Operacional</a><a href="#" onclick="document.querySelector('main').textContent='Lançamento financeiro'">FI</a></nav><main>Início</main><script>function showAlert(){const d=document.createElement('div');d.className='swal2-container';d.innerHTML='<div class="swal2-popup" role="dialog"><h2>Atenção!</h2><p>Sem dados para serem trabalhados</p><button type="button">OK</button></div>';d.querySelector('button').onclick=()=>d.remove();document.body.append(d);const loader=document.createElement('div');loader.className='blockUI blockOverlay';document.body.append(loader);setTimeout(()=>loader.remove(),900)}</script>`,
+      '/blocked-login': modern.replace('/modern-home','/blocked-home'),
+      '/two-step': `<form onsubmit="event.preventDefault();location='/two-step-password'"><label>Conta<input id="account" autocomplete="username"></label><button type="submit">Continuar</button></form>`,
+      '/two-step-password': `<form onsubmit="event.preventDefault();location='/generic-home'"><label>Senha<input id="password" type="password" autocomplete="current-password"></label><button type="submit">Entrar</button></form>`,
+      '/generic-home': `<main><h1>Página inicial</h1><p>Login em duas etapas concluído.</p></main>`,
+      '/single-login': modern.replace('/modern-home','/single-home'),
+      '/single-home': `<main><h1>Painel</h1><a href="/details">Detalhes da conta</a></main>`,
+      '/details': `<main><h1>Detalhes da conta</h1><button type="button" onclick="openContact()">Adicionar contato</button></main><template id="contact"><h1>Novo contato</h1><form><input name="nome"><button type="submit">Salvar</button><button role="tab" type="button" onclick="document.querySelector('h2').textContent='Endereços'">Endereço</button><h2>Dados gerais</h2></form></template><script>function openContact(){document.querySelector('main').replaceChildren(document.querySelector('#contact').content.cloneNode(true))}</script>`,
+      '/forms-login': modern.replace('/modern-home','/forms-home'),
+      '/forms-home': `<nav><a href="/forms-home">Cadastros</a></nav><div id="content"><h1>Lista de cadastros</h1><input type="button" value="Novo cliente" onclick="openForm('Cliente')"><a href="#" onclick="openForm('Proposta')">Criar uma nova proposta</a></div><template id="ficha"><div role="dialog"><h1>Ficha</h1><form action="/forbidden-save" method="post"><input name="nome"><button type="submit">Salvar</button><button type="button" onclick="fetch('/forbidden-delete')">Excluir</button><a href="#" data-toggle="tab" onclick="document.querySelector('h2').textContent='Dados gerais'">Geral</a><a href="#" data-toggle="tab" onclick="document.querySelector('h2').textContent='Endereços'">Endereço</a><h2>Dados gerais</h2></form></div></template><script>function openForm(name){const target=document.getElementById('content');target.replaceChildren(document.getElementById('ficha').content.cloneNode(true));target.querySelector('h1').textContent=name}</script>`,
+      '/http-login': modern.replace('/modern-home','/http-home'),
+      '/http-home': `<nav><a href="#" onclick="document.body.insertAdjacentHTML('beforeend','<div class=blockOverlay style=position:fixed;inset:0></div>');fetch('/missing.jsp?token=nao-registrar')">Solicitado</a><a href="/http-good">Consulta</a></nav><main>Início</main>`,
+      '/http-good': `<main>Consulta disponível</main>`,
+      '/blocked-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Consulta inicial'">Consulta</a><a href="#" onclick="document.body.insertAdjacentHTML('beforeend', '<div role=dialog style=position:fixed;inset:0;background:white;z-index:99>Deseja excluir o cadastro?<button onclick=window.confirmed=true>OK</button></div>')">Operacional</a><a href="#" onclick="document.querySelector('main').textContent='Próxima tela'">FI</a></nav><main>Início</main>`,
+    };
+    res.end(pages[route] || '<title>Sem login</title><h1>Página sem formulário</h1>');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  base = `http://127.0.0.1:${server.address().port}`;
+});
+async function newPage() {
+  browser ||= await chromium.launch({ channel: 'msedge', headless: true });
+  return browser.newPage();
+}
+afterEach(async () => { await browser?.close(); browser = null; });
+after(async () => { await browser?.close(); await new Promise(resolve => server.close(resolve)); });
+const credentials = route => ({ SISTEMA_URL: base + route, SISTEMA_USER: 'usuario-teste', SISTEMA_PASS: 'senha-"\\secreta' });
+
+test('login moderno sem Leads; menu oculto e ações de saída ignoradas', async () => {
+  const page = await newPage();
+  try {
+    await page.goto(base + '/modern');
+    const form = await ui.findLogin(page);
+    assert.equal(form.user.selector, '#email');
+    const menus = await ui.login(page, credentials('/modern'), 3000);
+    assert.ok(menus.some(e => e.name === 'Visão geral'));
+    assert.ok(!menus.some(e => e.name === 'Sair'));
+    assert.deepEqual(menus.find(e => e.name === 'Clientes').parentNames, ['Cadastros']);
+    await ui.openMenu(page, menus.find(e => e.name === 'Clientes'));
+    assert.equal(await page.locator('h1').innerText(), 'Clientes');
+  } finally { await page.close(); }
+});
+
+test('sistema legado dentro de iframes aninhados, frameset e navegação target', async () => {
+  const page = await newPage();
+  try {
+    await page.goto(base + '/nested');
+    const menus = await ui.login(page, credentials('/nested'), 5000);
+    assert.ok(menus.length >= 2);
+    const clients = menus.find(e => e.name === 'Clientes');
+    assert.ok(clients.framePath.length >= 3);
+    await ui.openMenu(page, clients);
+    assert.equal(await page.frame({ name: 'conteudo' }).locator('h1').innerText(), 'Cadastro de clientes');
+    assert.ok(!requests.includes('/logout'));
+    assert.ok(!requests.includes('/delete'));
+  } finally { await page.close(); }
+});
+
+test('campos sem IDs e botão image são detectados', async () => {
+  const page = await newPage();
+  try {
+    await page.goto(base + '/unusual');
+    const form = await ui.findLogin(page);
+    assert.equal(form.user.placeholder, 'Matrícula');
+    assert.equal(form.button.type, 'image');
+    assert.ok((await ui.login(page, credentials('/unusual'), 3000)).length);
+  } finally { await page.close(); }
+});
+
+test('crawler integrado gera capturas e metadados de frames legados', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-crawler-'));
+  const result = await scan({ credentials: credentials('/legacy'), artifactsRoot: root, log() {}, loginTimeoutMs: 4000 });
+  assert.equal(result.errors, 0);
+  assert.ok(result.records >= 3);
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json'), 'utf8'));
+  assert.ok(manifest.records.some(e => e.text.includes('Cadastro de clientes')));
+  assert.ok(manifest.records.some(e => e.kind === 'aba' && e.text.includes('Detalhes financeiros')));
+  for (const record of manifest.records) assert.ok(fs.statSync(path.join(result.out, record.image)).size > 100);
+});
+
+test('crawler moderno mantém capturas sem depender de Leads', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-crawler-'));
+  const result = await scan({ credentials: credentials('/modern'), artifactsRoot: root, log() {}, loginTimeoutMs: 4000 });
+  assert.equal(result.errors, 0);
+  assert.ok(result.records >= 2);
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.ok(manifest.records.some(record => record.label === 'Cadastros > Clientes'));
+  assert.ok(!manifest.records.some(record => record.label === 'Cadastros'));
+});
+
+test('falha de login produz diagnóstico sem credenciais, query, fragmento ou valores', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-crawler-'));
+  const secret = credentials('/rejected');
+  secret.SISTEMA_URL += '?token=token-privado#fragmento-privado';
+  await assert.rejects(scan({ credentials: secret, artifactsRoot: root, log() {}, loginTimeoutMs: 600 }), /Login não confirmado/);
+  const out = path.join(root, fs.readdirSync(root)[0]);
+  const file = fs.readdirSync(out).find(f => f.startsWith('diagnostico-'));
+  const data = JSON.parse(fs.readFileSync(path.join(out, file), 'utf8'));
+  assert.equal(data.title, 'Acesso negado');
+  assert.ok(data.frames[0].selectors.some(e => e.type === 'password'));
+  const serialized = JSON.stringify(data);
+  for (const value of [secret.SISTEMA_USER, secret.SISTEMA_PASS, 'token-privado', 'fragmento-privado']) assert.ok(!serialized.includes(value));
+  assert.ok(!data.frames[0].selectors.some(e => 'value' in e));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(out, 'scan-manifest.json'))).records.length, 0);
+});
+
+test('diagnóstico remove segredos com aspas, escapes e codificação de URL', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-diagnostic-'));
+  const page = await newPage();
+  const secret = 'segredo-"\\@';
+  try {
+    await page.goto(base + '/rejected');
+    await page.evaluate(value => { document.title = value; document.querySelector('input').id = value; }, secret);
+    const file = await ui.writeDiagnostic(page, root, new Error(`Falha ${encodeURIComponent(secret)}\nfill ${secret}`), [secret]);
+    const data = JSON.parse(fs.readFileSync(file));
+    assert.equal(data.title, '[oculto]');
+    assert.ok(!JSON.stringify(data).includes(JSON.stringify(secret).slice(1, -1)));
+  } finally { await page.close(); }
+});
+
+test('aviso informativo com overlay é fechado e a próxima tela é capturada', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-overlay-'));
+  const result = await scan({ credentials: credentials('/alert-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000 });
+  assert.equal(result.status, 'complete');
+  assert.equal(result.errors, 0);
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.equal(manifest.records.length, 2);
+  assert.ok(manifest.notices.length > 0);
+  assert.ok(manifest.records.some(r => r.text.includes('Lançamento financeiro')));
+  assert.ok(manifest.records.every(r => !r.text.includes('Sem dados para serem trabalhados')));
+});
+
+test('confirmação permanece intacta, recuperação continua e resultado é parcial', async () => {
+  const page = await newPage();
+  try {
+    await page.setContent('<div role="dialog">Deseja excluir?<button onclick="window.confirmed=true">OK</button></div>');
+    await assert.rejects(waitForInterface(page), /nenhuma confirmação/);
+    assert.equal(await page.evaluate(() => !!window.confirmed), false);
+  } finally { await page.close(); }
+  await browser.close(); browser = null;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-recovery-'));
+  const result = await scan({ credentials: credentials('/blocked-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000 });
+  assert.equal(result.status, 'partial');
+  assert.equal(result.complete, false);
+  assert.equal(result.errors, 1);
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.ok(manifest.records.some(r => r.text.includes('Próxima tela')));
+  const diagnostic = JSON.parse(fs.readFileSync(path.join(result.out, manifest.errors[0].diagnostic)));
+  assert.equal(diagnostic.code, 'UI_DIALOG');
+  assert.equal(diagnostic.action.name, 'Operacional');
+  assert.ok(diagnostic.interface[0].dialogs.length);
+});
+
+test('avisos informativos dentro de iframe também são dispensados', async () => {
+  const page = await newPage();
+  try {
+    await page.setContent('<iframe></iframe>');
+    const frame = page.frames()[1];
+    await frame.setContent('<div class="sweet-alert"><p>Nenhum registro encontrado</p><button type="button" onclick="this.parentElement.remove()">OK</button></div>');
+    await waitForInterface(page);
+    assert.equal(await frame.locator('.sweet-alert').count(), 0);
+  } finally { await page.close(); }
+});
+
+test('carregamento persistente tem prazo limitado e não é removido pelo crawler', async () => {
+  const page = await newPage();
+  try {
+    await page.setContent('<div class="blockUI blockOverlay" style="position:fixed;inset:0"></div>');
+    await assert.rejects(waitForInterface(page, { timeout: 400 }), error => error.code === 'UI_BLOCKED');
+    assert.equal(await page.locator('.blockOverlay').count(), 1);
+  } finally { await page.close(); }
+});
+
+const menuEntries = count => Array.from({ length: count }, (_, i) => ({ name: `Módulo ${i}`, selector: `#menu${i}`, framePath: [], parentNames: [], parents: [], href: '#' }));
+test('percorre mais de 150 menus e declara explicitamente um limite solicitado', async () => {
+  const entries = menuEntries(175);
+  const visited = [];
+  const options = { discover: async () => entries, open: async () => {}, visit: async entry => visited.push(entry.name), recover: async () => {}, report: async () => {} };
+  const result = await walkMenus(null, [...entries], options);
+  assert.equal(result.complete, true);
+  assert.equal(visited.length, 175);
+  const limited = await walkMenus(null, [...entries], { ...options, maxMenus: 5 });
+  assert.equal(limited.complete, false);
+  assert.equal(limited.pending.length, 170);
+});
+
+test('três falhas consecutivas interrompem a cascata e preservam os menus pendentes', async () => {
+  const entries = menuEntries(310);
+  let errors = 0, recoveries = 0;
+  const result = await walkMenus(null, entries, {
+    discover: async () => entries, open: async () => { throw new Error('Bloqueado'); }, visit: async () => assert.fail(),
+    recover: async () => { recoveries++; }, report: async () => { errors++; },
+  });
+  assert.equal(result.interrupted, true);
+  assert.equal(errors, 3);
+  assert.equal(recoveries, 2);
+  assert.equal(result.pending.length, 307);
+});
+
+test('links de menus locais da tabela não viram módulos quando existe menu principal', async () => {
+  const page = await newPage();
+  try {
+    await page.setContent('<nav><a href="#">FI</a></nav><main><div class="dropdown-menu"><a href="#">Exportar</a></div></main>');
+    assert.deepEqual((await ui.discoverMenus(page)).map(e => e.name), ['FI']);
+  } finally { await page.close(); }
+});
+
+test('diagnóstico de diálogo omite valores de textarea e identificadores do contêiner', async () => {
+  const page = await newPage();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-diagnostic-'));
+  try {
+    await page.setContent('<div id="identificador-privado" role="dialog"><p>Atenção</p><textarea>conteudo-privado-do-campo</textarea><button type="button">OK</button></div>');
+    const file = await ui.writeDiagnostic(page, root, new Error('Diálogo bloqueado'));
+    const data = fs.readFileSync(file, 'utf8');
+    assert.ok(!data.includes('conteudo-privado-do-campo'));
+    assert.ok(!data.includes('identificador-privado'));
+  } finally { await page.close(); }
+});
+
+test('submenus profundos preservam ancestrais abertos e permitem visitar irmãos', async () => {
+  const page = await newPage();
+  await page.setContent(`<nav><ul><li><a href="#" onclick="this.nextElementSibling.hidden=!this.nextElementSibling.hidden">FI</a><ul><li><a href="#" onclick="this.nextElementSibling.hidden=!this.nextElementSibling.hidden">Tesouraria</a><ul hidden><li><a href="#" onclick="this.nextElementSibling.hidden=!this.nextElementSibling.hidden">Competência</a><ul hidden><li><a href="#" onclick="document.querySelector('main').textContent='Abertura'">Abertura</a></li><li><a href="#" onclick="document.querySelector('main').textContent='Consulta'">Consulta</a></li></ul></li></ul></li></ul></li></ul></nav><main>Inicial</main>`);
+  const entries = await ui.discoverMenus(page);
+  const target = entries.find(e => e.name === 'Abertura');
+  assert.deepEqual(target.parentNames, ['FI', 'Tesouraria', 'Competência']);
+  await ui.openMenu(page, target);
+  assert.equal(await page.locator('main').innerText(), 'Abertura');
+  await ui.openMenu(page, entries.find(e => e.name === 'Consulta'));
+  assert.equal(await page.locator('main').innerText(), 'Consulta');
+});
+
+test('menu aberto por hover permite navegar sem fechar a lista', async () => {
+  const page = await newPage();
+  await page.setContent(`<style>li>ul{display:none}li:hover>ul{display:block}</style><nav><ul><li><a href="#">Consultas</a><ul><li><a href="#" onclick="document.querySelector('main').textContent='Clientes'">Clientes</a></li></ul></li></ul></nav><main>Inicial</main>`);
+  await ui.openMenu(page, (await ui.discoverMenus(page)).find(e => e.name === 'Clientes'));
+  assert.equal(await page.locator('main').innerText(), 'Clientes');
+});
+
+test('menus TinyMCE e ferramentas não viram módulos nem pais de botões irmãos', async () => {
+  const page = await newPage();
+  await page.setContent(`<nav><button aria-haspopup="true">FI</button><button aria-haspopup="true">Administrativo</button></nav><main><div class="mce-container"><div role="menubar"><button aria-haspopup="true">Arquivo</button><button aria-haspopup="true">Editar</button></div></div><div class="tox"><button role="menuitem">Visualizar</button></div><div role="toolbar"><button role="menuitem">Inserir</button></div></main>`);
+  const menus = await ui.discoverMenus(page);
+  assert.deepEqual(menus.map(e => e.name), ['FI', 'Administrativo']);
+  assert.ok(menus.every(e => e.parents.length === 0));
+  await page.locator('nav').evaluate(el => el.remove());
+  assert.deepEqual((await ui.discoverMenus(page)).map(item => item.name), ['Página inicial']);
+});
+
+test('fila reencontra menu após mudança de seletor e preserva nomes repetidos em outros módulos', async () => {
+  const initial = ['FI', 'Administrativo'].map((parent, index) => ({ ...menuEntries(1)[0], name: 'Consulta', parentNames: [parent], selector: `#old${index}` }));
+  const updated = initial.map((entry, index) => ({ ...entry, selector: `#new${index}` }));
+  const visited = [];
+  const result = await walkMenus(null, [...initial], {
+    discover: async () => updated, open: async e => assert.ok(e.selector.startsWith('#new')),
+    visit: async e => visited.push(e.parentNames[0]), recover: async () => assert.fail(), report: async () => assert.fail(),
+  });
+  assert.equal(result.complete, true);
+  assert.equal(result.attempted, 2);
+  assert.deepEqual(visited, ['FI', 'Administrativo']);
+});
+
+test('página virtual de uma rota final não entra novamente na fila de menus', async () => {
+  const entry = menuEntries(1)[0];
+  const virtual = { ...entry, name: 'Página inicial', selector: 'body', virtual: true };
+  let discoveries = 0, visits = 0;
+  const result = await walkMenus(null, [entry], {
+    discover: async () => ++discoveries === 1 ? [entry] : [virtual],
+    open: async () => {}, visit: async () => visits++, recover: async () => assert.fail(), report: async () => assert.fail(),
+  });
+  assert.equal(result.complete, true);
+  assert.equal(result.attempted, 1);
+  assert.equal(visits, 1);
+});
+
+test('carregamento transitório é recuperado uma vez antes de capturar', async () => {
+  const entries = menuEntries(1);
+  let opens = 0, recoveries = 0, retries = 0, captures = 0;
+  const result = await walkMenus(null, [...entries], {
+    discover: async () => entries,
+    open: async () => { if (++opens === 1) throw Object.assign(new Error('Carregando'), { code: 'UI_BLOCKED' }); },
+    visit: async () => captures++, recover: async () => recoveries++, onRetry: () => retries++, report: async () => assert.fail(),
+  });
+  assert.equal(result.complete, true);
+  assert.deepEqual([opens, recoveries, retries, captures], [2, 1, 1, 1]);
+});
+
+test('falha persistente tem duas tentativas por menu e mantém o limite de três falhas', async () => {
+  const entries = menuEntries(10);
+  let opens = 0, retries = 0, reports = 0;
+  const result = await walkMenus(null, entries, {
+    discover: async () => entries,
+    open: async () => { opens++; throw Object.assign(new Error('Oculto'), { code: 'MENU_HIDDEN' }); },
+    visit: async () => assert.fail(), recover: async () => {}, onRetry: () => retries++, report: async () => reports++,
+  });
+  assert.deepEqual([opens, retries, reports], [6, 3, 3]);
+  assert.equal(result.interrupted, true);
+  assert.equal(result.pending.length, 7);
+});
+
+test('login com usuário e senha em etapas é detectado automaticamente', async () => {
+  const page = await newPage();
+  try {
+    await page.goto(base + '/two-step');
+    const firstStep = await ui.findLogin(page);
+    assert.equal(firstStep.user.selector, '#account');
+    assert.equal(firstStep.password, null);
+    const menus = await ui.login(page, credentials('/two-step'), 5000);
+    assert.deepEqual(menus.map(item => item.name), ['Página inicial']);
+    assert.match(await page.locator('main').innerText(), /duas etapas concluído/);
+  } finally { await page.close(); }
+});
+
+test('página sem menu é capturada e links internos, formulários e abas são explorados', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-single-'));
+  const result = await scan({ credentials: credentials('/single-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000 });
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.equal(result.errors, 0);
+  assert.equal(result.status, 'complete');
+  assert.ok(manifest.records.some(record => record.label === 'Página inicial' && record.kind === 'geral'));
+  assert.ok(manifest.records.some(record => record.label === 'Página inicial > Detalhes da conta' && record.kind === 'tela'));
+  assert.ok(manifest.records.some(record => record.label.includes('Adicionar contato') && record.kind === 'novo'));
+  assert.ok(manifest.records.some(record => record.label.endsWith('Endereço') && record.kind === 'aba'));
+});
+
+test('abre Novo e Criar uma nova em JSP sem main, captura abas e não salva nem exclui', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-forms-'));
+  const start = requests.length;
+  const result = await scan({ credentials: credentials('/forms-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000 });
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.equal(result.errors, 0);
+  assert.equal(result.status, 'complete');
+  assert.equal(manifest.records.filter(record => record.kind === 'novo').length, 2);
+  assert.ok(manifest.records.some(record => record.label.includes('Novo cliente > Endereço')));
+  assert.ok(manifest.records.some(record => record.label.includes('Criar uma nova proposta > Endereço')));
+  assert.ok(!requests.slice(start).some(route => route.startsWith('/forbidden-')));
+});
+
+test('descobre Novo em iframe e não trata botões submit ou Salvar como abertura', async () => {
+  const page = await newPage();
+  await page.setContent('<iframe></iframe>');
+  const frame = page.frames()[1];
+  const initial = `<header><input type="button" value="Nova ficha" onclick="document.body.innerHTML='<div role=dialog><form><input><button>Salvar</button></form></div>'"></header><form><button type="submit">Novo registro</button></form><button>Salvar</button><button>Deletar</button>`;
+  await frame.setContent(initial);
+  assert.deepEqual((await contentControls(page, 'new')).map(item => item.name), ['Nova ficha']);
+  const captures = [];
+  await exploreContent(page, ['Clientes'], {
+    capture: async (labels, kind) => captures.push({ labels, kind }), report: async (_label, error) => { throw error; },
+    restore: async () => frame.setContent(initial),
+  });
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].kind, 'novo');
+  assert.equal(await frame.locator('[role=dialog]').count(), 0);
+});
+
+test('404 real produz diagnóstico HTTP sem query, não repete e continua a próxima tela', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-http-'));
+  const start = requests.length;
+  const result = await scan({ credentials: credentials('/http-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000, interfaceTimeoutMs: 5000 });
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.equal(result.status, 'partial');
+  assert.equal(result.errors, 1);
+  assert.equal(requests.slice(start).filter(route => route === '/missing.jsp').length, 1);
+  assert.ok(manifest.records.some(record => record.text.includes('Consulta disponível')));
+  const diagnostic = JSON.parse(fs.readFileSync(path.join(result.out, manifest.errors[0].diagnostic)));
+  assert.equal(diagnostic.code, 'HTTP_404');
+  assert.equal(diagnostic.network[0].status, 404);
+  assert.ok(!JSON.stringify(diagnostic).includes('nao-registrar'));
+  assert.match(manifest.errors[0].error, /HTTP 404/);
+});
+
+test('monitor ignora credenciais de login e descarta erros da ação anterior', async () => {
+  const page = await newPage();
+  await page.goto(base + '/modern');
+  const network = attachNetworkMonitor(page, url => ui.safeUrl(url, ui.redactor([])));
+  await page.evaluate(() => fetch('/missing.jsp?senha=privada'));
+  assert.deepEqual(network.snapshot(), []);
+  network.reset();
+  await page.evaluate(() => fetch('/missing.jsp?token=privado'));
+  assert.equal(network.failure().code, 'HTTP_404');
+  assert.ok(!JSON.stringify(network.snapshot()).includes('privado'));
+  network.reset();
+  assert.equal(network.failure(), null);
+  network.dispose();
+});
+
+test('Novo sem efeito não é registrado como formulário capturado', async () => {
+  const page = await newPage();
+  await page.setContent('<button type="button">Novo</button>');
+  const failures = [];
+  await exploreContent(page, ['Clientes'], {
+    capture: async () => assert.fail('Não há formulário para capturar'),
+    report: async (_label, error) => failures.push(error.code), restore: async () => {},
+  });
+  assert.deepEqual(failures, ['FORM_NOT_OPENED']);
+});
+
+test('abas e botões atrás de uma janela modal não são explorados', async () => {
+  const page = await newPage();
+  await page.setContent('<button role="tab">Aba da lista</button><button type="button">Novo na lista</button><div role="dialog" style="position:fixed;inset:0;background:white;z-index:10"><input><button role="tab" type="button">Dados da ficha</button><button type="button">Salvar</button></div>');
+  assert.deepEqual((await contentControls(page, 'tab')).map(item => item.name), ['Dados da ficha']);
+  assert.deepEqual(await contentControls(page, 'new'), []);
+});

@@ -1,0 +1,52 @@
+{
+  "name": "documentador-de-sistemas",
+  "version": "1.2.0",
+  "description": "Varredura segura e geração de documentação para sistemas web",
+  "main": "desktop/main.js",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 manual.test.js proxy-integration.test.js crawler.test.js",
+    "scan": "node varredura-completa.js",
+    "desktop:start": "electron .",
+    "desktop:build": "electron-builder --win portable --x64"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@playwright/test": "^1.63.0",
+    "dotenv": "^18.0.4",
+    "playwright": "^1.63.0"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.felipealp13.documentador",
+    "productName": "Documentador de Sistemas",
+    "asar": true,
+    "electronDist": "node_modules/electron/dist",
+    "asarUnpack": ["node_modules/playwright-core/**"],
+    "files": [
+      "desktop/**/*",
+      "varredura-completa.js",
+      "crawler-interface.js",
+      "crawler-ui-state.js",
+      "crawler-navigation.js",
+      "crawler-content.js",
+      "crawler-network.js",
+      "gerar-manual.js",
+      "gemini-client.js",
+      "package.json",
+      "!**/.env",
+      "!**/.env.*",
+      "!**/artifacts/**",
+      "!**/estado-sessao.json"
+    ],
+    "directories": { "output": "dist" },
+    "win": { "target": "portable" },
+    "portable": { "artifactName": "Documentador-de-Sistemas-${version}-portable.exe" }
+  }
+}

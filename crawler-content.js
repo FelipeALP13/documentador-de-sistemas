@@ -80,7 +80,8 @@ async function exploreContent(page, parts, { capture, report, restore, interface
   const wait = () => waitForInterface(page, { ...interfaceOptions, allowForms: true });
   const restoreRoute = async route => {
     await restore();
-    for (const tab of route) { onAction(); await activate(page, tab); await wait(); }
+    const restored = [];
+    for (const tab of route) { restored.push(tab.name); onAction(restored.join(' > ')); await activate(page, tab); await wait(); }
   };
   // Read every visible tab, including JSP/Bootstrap tabs without role="tab".
   async function tabs(labels, route, ancestors = new Set(), depth = 0, allowNew = true) {
@@ -90,7 +91,7 @@ async function exploreContent(page, parts, { capture, report, restore, interface
     for (const tab of items) {
       if (ancestors.has(key(tab))) continue;
       try {
-        onAction();
+        onAction([...labels, tab.name].join(' > '));
         await activate(page, tab);
         await wait();
         await capture([...labels, tab.name], 'aba');
@@ -110,7 +111,7 @@ async function exploreContent(page, parts, { capture, report, restore, interface
     for (const opener of openers) {
       try {
         const before = await signature(page);
-        onAction();
+        onAction([...labels, opener.name].join(' > '));
         await activate(page, opener);
         await wait();
         const deadline = Date.now() + 5000;
@@ -134,7 +135,7 @@ async function exploreContent(page, parts, { capture, report, restore, interface
       if (visited.has(key)) continue;
       visited.add(key);
       try {
-        onAction();
+        onAction([...labels, screen.name].join(' > '));
         await activate(page, screen);
         await wait();
         await capture([...labels, screen.name], 'tela');

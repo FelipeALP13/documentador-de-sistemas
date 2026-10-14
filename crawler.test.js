@@ -12,7 +12,7 @@ const { walkMenus } = require('./crawler-navigation');
 const { exploreContent, controls: contentControls } = require('./crawler-content');
 const { attachNetworkMonitor } = require('./crawler-network');
 
-let server, base, browser;
+let server, base, browser, expireRequests = 0;
 const requests = [];
 const modern = `<form action="/modern-home"><input type="search" placeholder="Pesquisar"><input id="email" autocomplete="username"><input id="senha" type="password"><button type="submit">Entrar</button></form>`;
 const legacy = `<title>Sistema legado</title><form id="frmLogin" action="/frames"><label for="usuario">Usuário</label><input id="usuario" name="usuario_login"><input id="senha" name="senha_login" type="password"><input type="submit" value="Entrar"></form>`;
@@ -22,6 +22,18 @@ before(async () => {
     requests.push(route);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     if (route === '/missing.jsp') { res.statusCode = 404; res.end('Not found'); return; }
+    if (route === '/reauth-home') {
+      if (req.method === 'POST') res.end(`<nav><a href="/expire-once">Relatório protegido</a></nav><main>Sessão ativa</main>`);
+      else res.end(`<form action="/reauth-home" method="post"><input name="usuario_login"><input type="password" name="senha_login"><button type="submit">Entrar</button></form>`);
+      return;
+    }
+    if (route === '/expire-once') {
+      expireRequests++;
+      res.end(expireRequests === 1
+        ? `<form action="/reauth-home" method="post"><input name="usuario_login"><input type="password" name="senha_login"><button type="submit">Entrar</button></form>`
+        : `<main>Relatório após nova autenticação</main>`);
+      return;
+    }
     const pages = {
       '/modern': modern,
       '/modern-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Painel de vendas'">Visão geral</a><div class="grupo"><a href="#" aria-expanded="false" onclick="this.nextElementSibling.hidden=false;this.setAttribute('aria-expanded','true')">Cadastros</a><div hidden><a href="#" onclick="document.querySelector('main').innerHTML='<h1>Clientes</h1>'">Clientes</a></div></div><a href="/logout">Sair</a></nav><main>Bem-vindo</main>`,
@@ -46,6 +58,11 @@ before(async () => {
       '/details': `<main><h1>Detalhes da conta</h1><button type="button" onclick="openContact()">Adicionar contato</button></main><template id="contact"><h1>Novo contato</h1><form><input name="nome"><button type="submit">Salvar</button><button role="tab" type="button" onclick="document.querySelector('h2').textContent='Endereços'">Endereço</button><h2>Dados gerais</h2></form></template><script>function openContact(){document.querySelector('main').replaceChildren(document.querySelector('#contact').content.cloneNode(true))}</script>`,
       '/bootstrap-login': modern.replace('/modern-home','/bootstrap-home'),
       '/bootstrap-home': `<div class="navbar"><ul class="nav navbar-nav"><li class="dropdown"><a class="dropdown-toggle" href="#" onclick="this.nextElementSibling.hidden=false">BI</a><ul class="dropdown-menu" hidden><li><a href="#" onclick="document.querySelector('main').textContent='Painel analítico'">Painel</a></li></ul></li><li class="dropdown"><a class="dropdown-toggle" href="#" onclick="this.nextElementSibling.hidden=false">Financeiro</a><ul class="dropdown-menu" hidden><li><a href="#" onclick="document.querySelector('main').textContent='Contas a pagar'">Contas</a></li></ul></li></ul></div><main>Início</main>`,
+      '/script-login': modern.replace('/modern-home','/script-home'),
+      '/script-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Tela disponível';document.querySelector('inexistente').valor=1">Relatório</a></nav><main>Início</main>`,
+      '/settings-field-login': modern.replace('/modern-home','/settings-field-home'),
+      '/settings-field-home': `<nav><a href="#" onclick="document.querySelector('main').hidden=false">Configuração</a></nav><main hidden><form><label>Conta<input name="account"></label><button type="button">Salvar</button></form></main>`,
+      '/reauth-login': `<form action="/reauth-home" method="post"><input name="usuario_login"><input type="password" name="senha_login"><button type="submit">Entrar</button></form>`,
       '/forms-login': modern.replace('/modern-home','/forms-home'),
       '/forms-home': `<nav><a href="/forms-home">Cadastros</a></nav><div id="content"><h1>Lista de cadastros</h1><input type="button" value="Novo cliente" onclick="openForm('Cliente')"><a href="#" onclick="openForm('Proposta')">Criar uma nova proposta</a></div><template id="ficha"><div role="dialog"><h1>Ficha</h1><form action="/forbidden-save" method="post"><input name="nome"><button type="submit">Salvar</button><button type="button" onclick="fetch('/forbidden-delete')">Excluir</button><a href="#" data-toggle="tab" onclick="document.querySelector('h2').textContent='Dados gerais'">Geral</a><a href="#" data-toggle="tab" onclick="document.querySelector('h2').textContent='Endereços'">Endereço</a><h2>Dados gerais</h2></form></div></template><script>function openForm(name){const target=document.getElementById('content');target.replaceChildren(document.getElementById('ficha').content.cloneNode(true));target.querySelector('h1').textContent=name}</script>`,
       '/http-login': modern.replace('/modern-home','/http-home'),
@@ -72,6 +89,7 @@ test('login moderno sem Leads; menu oculto e ações de saída ignoradas', async
     await page.goto(base + '/modern');
     const form = await ui.findLogin(page);
     assert.equal(form.user.selector, '#email');
+    assert.ok(await ui.findLogin(page, { strict: true }));
     const menus = await ui.login(page, credentials('/modern'), 3000);
     assert.ok(menus.some(e => e.name === 'Visão geral'));
     assert.ok(!menus.some(e => e.name === 'Sair'));
@@ -139,6 +157,35 @@ test('menus Bootstrap em div navbar são descobertos sem cair em Página inicial
   assert.ok(!manifest.records.some(record => record.label === 'Página inicial'));
 });
 
+test('erro JavaScript interno vira aviso e a tela ainda é capturada', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-script-'));
+  const result = await scan({ credentials: credentials('/script-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 4000 });
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.equal(result.status, 'complete');
+  assert.equal(result.errors, 0);
+  assert.ok(manifest.records.some(record => record.label === 'Relatório' && record.text.includes('Tela disponível')));
+  assert.ok(manifest.warnings.some(warning => warning.code === 'PAGE_SCRIPT_ERROR'));
+});
+
+test('campo de conta em tela autenticada não é confundido com login', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-auth-field-'));
+  const result = await scan({ credentials: credentials('/settings-field-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 4000 });
+  assert.equal(result.status, 'complete');
+  assert.equal(result.errors, 0);
+  assert.equal(result.records, 1);
+});
+
+test('sessão expirada é autenticada novamente e a varredura continua', async () => {
+  expireRequests = 0;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-reauth-'));
+  const result = await scan({ credentials: credentials('/reauth-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 4000 });
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.equal(result.status, 'complete');
+  assert.equal(result.errors, 0);
+  assert.ok(manifest.records.some(record => record.text.includes('Relatório após nova autenticação')));
+  assert.ok(manifest.notices.some(notice => notice.message.includes('autenticando novamente')));
+});
+
 test('falha de login produz diagnóstico sem credenciais, query, fragmento ou valores', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-crawler-'));
   const secret = credentials('/rejected');
@@ -202,6 +249,15 @@ test('confirmação permanece intacta, recuperação continua e resultado é par
   assert.ok(diagnostic.interface[0].dialogs.length);
 });
 
+test('aviso que exige seleção anterior é recuperável e não confirma nada', async () => {
+  const page = await newPage();
+  try {
+    await page.setContent('<div role="dialog">Atenção! Escolha um convênio<button type="button" onclick="window.confirmed=true">OK</button></div>');
+    await assert.rejects(waitForInterface(page), error => error.code === 'UI_PREREQUISITE' && error.recoverable === true);
+    assert.equal(await page.evaluate(() => !!window.confirmed), false);
+  } finally { await page.close(); }
+});
+
 test('avisos informativos dentro de iframe também são dispensados', async () => {
   const page = await newPage();
   try {
@@ -246,6 +302,23 @@ test('três falhas consecutivas interrompem a cascata e preservam os menus pende
   assert.equal(errors, 3);
   assert.equal(recoveries, 2);
   assert.equal(result.pending.length, 307);
+});
+
+test('falhas recuperáveis do sistema são puladas sem interromper os menus seguintes', async () => {
+  const entries = menuEntries(8);
+  let reports = 0, recoveries = 0;
+  const result = await walkMenus(null, entries, {
+    discover: async () => entries,
+    open: async () => { throw Object.assign(new Error('Tela indisponível'), { code: 'HTTP_404' }); },
+    visit: async () => assert.fail(), recover: async () => { recoveries++; },
+    report: async () => { reports++; return { recoverable: true }; },
+  });
+  assert.equal(result.complete, true);
+  assert.equal(result.failures, 0);
+  assert.equal(result.skipped, 8);
+  assert.equal(result.pending.length, 0);
+  assert.equal(reports, 8);
+  assert.equal(recoveries, 8);
 });
 
 test('links de menus locais da tabela não viram módulos quando existe menu principal', async () => {
@@ -403,26 +476,28 @@ test('descobre Novo em iframe e não trata botões submit ou Salvar como abertur
   assert.equal(await frame.locator('[role=dialog]').count(), 0);
 });
 
-test('404 real produz diagnóstico HTTP sem query, não repete e continua a próxima tela', async () => {
+test('404 real vira aviso com diagnóstico sem query e não impede as próximas telas', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-http-'));
   const start = requests.length;
   const result = await scan({ credentials: credentials('/http-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000, interfaceTimeoutMs: 5000 });
   const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
-  assert.equal(result.status, 'partial');
-  assert.equal(result.errors, 1);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.errors, 0);
   assert.equal(requests.slice(start).filter(route => route === '/missing.jsp').length, 1);
   assert.ok(manifest.records.some(record => record.text.includes('Consulta disponível')));
-  const diagnostic = JSON.parse(fs.readFileSync(path.join(result.out, manifest.errors[0].diagnostic)));
+  const warning = manifest.warnings.find(item => item.code === 'HTTP_404');
+  const diagnostic = JSON.parse(fs.readFileSync(path.join(result.out, warning.diagnostic)));
   assert.equal(diagnostic.code, 'HTTP_404');
   assert.equal(diagnostic.network[0].status, 404);
   assert.ok(!JSON.stringify(diagnostic).includes('nao-registrar'));
-  assert.match(manifest.errors[0].error, /HTTP 404/);
+  assert.match(warning.error, /HTTP 404/);
 });
 
 test('monitor ignora credenciais de login e descarta erros da ação anterior', async () => {
   const page = await newPage();
   await page.goto(base + '/modern');
-  const network = attachNetworkMonitor(page, url => ui.safeUrl(url, ui.redactor([])));
+  const warnings = [];
+  const network = attachNetworkMonitor(page, url => ui.safeUrl(url, ui.redactor([])), warning => warnings.push(warning));
   await page.evaluate(() => fetch('/missing.jsp?senha=privada'));
   assert.deepEqual(network.snapshot(), []);
   network.reset();
@@ -431,6 +506,11 @@ test('monitor ignora credenciais de login e descarta erros da ação anterior', 
   assert.ok(!JSON.stringify(network.snapshot()).includes('privado'));
   network.reset();
   assert.equal(network.failure(), null);
+  network.reset('Tela de teste');
+  await page.evaluate(() => setTimeout(() => { throw new TypeError('falha interna'); }, 0));
+  await page.waitForTimeout(50);
+  assert.equal(network.failure(), null);
+  assert.match(warnings[0], /Tela de teste.*TypeError/);
   network.dispose();
 });
 

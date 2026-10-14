@@ -53,6 +53,14 @@ function informational(dialog) {
     && dialog.buttons[0].type !== 'submit';
 }
 
+function prerequisite(dialog) {
+  const text = dialog.text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return !dialog.editable && dialog.buttons.length === 1
+    && /^(ok|fechar|entendi)$/i.test(dialog.buttons[0].text)
+    && dialog.buttons[0].type !== 'submit'
+    && !/deseja|certeza|confirmar|excluir|deletar|remover|salvar|gravar|enviar|publicar|pagar|cancelar|encerrar|inativar|suspender|aprovar|reprovar/.test(text);
+}
+
 async function waitForInterface(page, { timeout = 30000, quietMs = 650, allowForms = false, onNotice = () => {}, failureCheck = () => null } = {}) {
   const deadline = Date.now() + timeout;
   let clearSince = 0;
@@ -71,8 +79,12 @@ async function waitForInterface(page, { timeout = 30000, quietMs = 650, allowFor
             onNotice('Aviso informativo de ausência de dados fechado.');
           } catch { /* Retry only while the bounded loading deadline remains. */ }
         } else if (!(allowForms && dialog.editable)) {
-          const error = new Error('Diálogo requer interação; nenhuma confirmação foi acionada.');
-          error.code = 'UI_DIALOG';
+          const safePrerequisite = prerequisite(dialog);
+          const error = new Error(safePrerequisite
+            ? 'A tela exige uma seleção ou informação anterior; nenhuma confirmação foi acionada.'
+            : 'Diálogo requer interação; nenhuma confirmação foi acionada.');
+          error.code = safePrerequisite ? 'UI_PREREQUISITE' : 'UI_DIALOG';
+          error.recoverable = safePrerequisite;
           throw error;
         }
       }
@@ -99,4 +111,4 @@ async function diagnosticState(page) {
   }
   return result;
 }
-module.exports = { waitForInterface, diagnosticState, informational };
+module.exports = { waitForInterface, diagnosticState, informational, prerequisite };

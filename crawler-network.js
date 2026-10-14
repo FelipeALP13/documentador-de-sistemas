@@ -1,7 +1,7 @@
 const monitorKey = Symbol('documentador-network');
 
-function attachNetworkMonitor(page, sanitizeUrl) {
-  let enabled = false, started = new WeakSet(), failures = [];
+function attachNetworkMonitor(page, sanitizeUrl, onWarning = () => {}) {
+  let enabled = false, started = new WeakSet(), failures = [], actionLabel = '', reportedScripts = new Set();
   const onRequest = request => {
     if (!enabled || !['document', 'xhr', 'fetch'].includes(request.resourceType())) return;
     try { if (new URL(request.url()).origin === new URL(page.url()).origin) started.add(request); } catch {}
@@ -23,14 +23,17 @@ function attachNetworkMonitor(page, sanitizeUrl) {
     const type = ['ReferenceError','TypeError','SyntaxError','RangeError'].includes(error.name) ? error.name : 'Error';
     failures.push({ javascript: type });
     failures = failures.slice(-20);
+    if (!reportedScripts.has(type)) {
+      reportedScripts.add(type);
+      onWarning(`A tela ${actionLabel || 'atual'} apresentou um erro JavaScript interno (${type}); a captura continuou.`);
+    }
   };
   const monitor = {
-    reset() { enabled = true; started = new WeakSet(); failures = []; },
+    reset(label = '') { enabled = true; started = new WeakSet(); failures = []; actionLabel = label; reportedScripts = new Set(); },
     snapshot() { return failures.slice(); },
     failure() {
-      const failure = failures.at(-1);
+      const failure = failures.filter(item => !item.javascript).at(-1);
       if (!failure) return null;
-      if (failure.javascript) return Object.assign(new Error(`A página apresentou um erro JavaScript (${failure.javascript}) ao abrir a tela.`), { code: 'PAGE_SCRIPT_ERROR' });
       const message = failure.status ? `O servidor retornou HTTP ${failure.status} ao abrir ${failure.url}.` : `Falha de rede ao abrir ${failure.url}: ${failure.reason}.`;
       const code = failure.status >= 500 ? 'HTTP_5XX' : failure.status ? `HTTP_${failure.status}` : 'NETWORK_FAILURE';
       return Object.assign(new Error(message), { code });

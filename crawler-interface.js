@@ -63,7 +63,7 @@ function resolveFrame(page, indices) {
   return frame;
 }
 
-async function findLogin(page) {
+async function findLogin(page, { strict = false } = {}) {
   for (const frame of page.frames()) {
     const items = await inspect(frame).catch(() => []);
     const passwords = items.filter(e => e.visible && !e.disabled && e.type.toLowerCase() === 'password');
@@ -80,7 +80,11 @@ async function findLogin(page) {
     const buttonScore = e => (/entrar|acessar|login|logar|conectar|entrad|sign.?in|autenticar|acesso|continuar|continue|proximo|next|avancar|prosseguir/.test(normalize(`${e.text} ${e.id} ${e.name} ${e.aria}`)) ? 20 : 0)
       + (e.type === 'submit' || (e.tag === 'button' && !e.type) ? 10 : 0) + (e.form === form ? 1 : 0);
     buttons.sort((a, b) => buttonScore(b) - buttonScore(a));
-    return { frame, user, password, button: buttons.find(e => buttonScore(e) >= 10), step: password ? 'password' : 'username' };
+    const button = buttons.find(e => buttonScore(e) >= 10);
+    const authContext = /(?:^|[\/_?&=.-])(login|logon|signin|sign-in|auth|autenticar|acesso)(?:$|[\/_?&=.-])/i.test(frame.url()) ? 30 : 0;
+    const confidence = (user ? userScore(user) : 0) + (password ? 20 : 0) + (button ? buttonScore(button) : 0) + authContext;
+    if (strict && confidence < 50) continue;
+    return { frame, user, password, button, confidence, step: password ? 'password' : 'username' };
   }
   return null;
 }
@@ -119,7 +123,7 @@ async function login(page, credentials, timeout = 30000) {
   const submitted = new Set();
   let usedPassword = false;
   while (Date.now() < deadline) {
-    const form = await findLogin(page);
+    const form = await findLogin(page, { strict: usedPassword });
     if (!form) {
       const challenge = await authenticationChallenge(page);
       if (challenge) throw Object.assign(new Error(challenge), { code: 'AUTH_CHALLENGE' });
@@ -142,7 +146,7 @@ async function login(page, credentials, timeout = 30000) {
     await activateLoginControl(control);
     await pause(250);
   }
-  if (usedPassword && !(await findLogin(page))) {
+  if (usedPassword && !(await findLogin(page, { strict: true }))) {
       const menus = await discoverMenus(page);
       if (menus.some(e => e.visible)) return menus;
   }

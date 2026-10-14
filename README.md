@@ -16,6 +16,8 @@ A varredura abre telas e formulários **Novo/Nova, Adicionar, Cadastrar e Inclui
 - abas ARIA, Bootstrap e JSP;
 - links internos seguros e formulários de criação;
 - diagnóstico de URL, título, frames, seletores e falhas HTTP sem valores de credenciais.
+- reautenticação automática quando a sessão expira durante varreduras longas;
+- erros JavaScript e respostas HTTP do sistema registrados como avisos, sem interromper os demais menus.
 
 CAPTCHA, MFA, páginas sem permissão e respostas HTTP de erro exigem intervenção ou correção no sistema de origem. O aplicativo registra esses casos e continua quando for seguro.
 

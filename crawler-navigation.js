@@ -7,7 +7,7 @@ async function walkMenus(page, queue, {
   open = entry => ui.openMenu(page, entry), visit, recover, report, onQueue = () => {}, onWarning = () => {}, onRetry = () => {},
 }) {
   const known = new Set(queue.map(key));
-  let attempted = 0, visited = 0, consecutiveErrors = 0, failures = 0, interrupted = false;
+  let attempted = 0, visited = 0, skipped = 0, consecutiveErrors = 0, failures = 0, interrupted = false;
   for (let index = 0; index < queue.length && attempted < maxMenus; index++) {
     const entry = queue[index];
     attempted++;
@@ -20,7 +20,7 @@ async function walkMenus(page, queue, {
           await open(current);
           break;
         } catch (error) {
-          const transient = error.name === 'TimeoutError' || ['MENU_MISSING','MENU_HIDDEN','MENU_BLOCKED','UI_BLOCKED','HTTP_5XX','NETWORK_FAILURE'].includes(error.code);
+          const transient = error.name === 'TimeoutError' || ['MENU_MISSING','MENU_HIDDEN','MENU_BLOCKED','UI_BLOCKED','HTTP_5XX','NETWORK_FAILURE','SESSION_EXPIRED'].includes(error.code);
           if (attempt || !transient) throw error;
           onRetry(entry);
           await recover();
@@ -38,11 +38,12 @@ async function walkMenus(page, queue, {
       if (!isGroup) { await visit(current); visited++; }
       consecutiveErrors = 0;
     } catch (error) {
-      failures++;
       error.action = { name: entry.name, selector: entry.selector, framePath: entry.framePath, ...error.action };
-      await report([...entry.parentNames || [], entry.name].join(' > '), error);
-      consecutiveErrors++;
-      if (consecutiveErrors >= maxConsecutiveErrors) {
+      const outcome = await report([...entry.parentNames || [], entry.name].join(' > '), error);
+      const recoverable = error.recoverable || outcome?.recoverable;
+      if (recoverable) { skipped++; consecutiveErrors = 0; }
+      else { failures++; consecutiveErrors++; }
+      if (!recoverable && consecutiveErrors >= maxConsecutiveErrors) {
         interrupted = true;
         onWarning(`Varredura interrompida após ${consecutiveErrors} falhas consecutivas; capturas já feitas foram preservadas.`);
         break;
@@ -58,6 +59,6 @@ async function walkMenus(page, queue, {
   }
   const pending = queue.slice(attempted).map(e => ({ name: e.name, parents: e.parentNames || [], framePath: e.framePath }));
   if (pending.length && !interrupted) onWarning(`Limite de ${maxMenus} menus atingido; ${pending.length} itens não foram visitados.`);
-  return { attempted, visited, failures, pending, interrupted, complete: !failures && !pending.length && !interrupted };
+  return { attempted, visited, skipped, failures, pending, interrupted, complete: !failures && !pending.length && !interrupted };
 }
 module.exports = { walkMenus };

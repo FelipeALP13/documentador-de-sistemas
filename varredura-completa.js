@@ -26,8 +26,11 @@ async function main(options={}){
  const interfaceOptions={timeout:options.interfaceTimeoutMs||30000,failureCheck:()=>network?.failure(),onNotice:message=>{notices.push({message});log(message)}};
  async function report(label,e){
   const file=await ui.writeDiagnostic(page,out,e,secrets,env.SISTEMA_URL);
-  errors.push({label:redact(label),error:redact(e.message.split('\n')[0]).replace(/https?:\/\/[^\s"']+/g,u=>ui.safeUrl(u,redact)),diagnostic:path.basename(file)});
-  flush(menu);log(`Falha em ${errors.at(-1).label}: ${errors.at(-1).error}`);log('Diagnóstico:',file);
+  const recoverable=!!e.recoverable||/^HTTP_(?:\d+|5XX)$/.test(e.code||'')||e.code==='NETWORK_FAILURE';
+  const item={label:redact(label),error:redact(e.message.split('\n')[0]).replace(/https?:\/\/[^\s"']+/g,u=>ui.safeUrl(u,redact)),diagnostic:path.basename(file),code:e.code||null};
+  (recoverable?warnings:errors).push(item);
+  flush(menu);log(`${recoverable?'Aviso':'Falha'} em ${item.label}: ${item.error}`);log('Diagnóstico:',file);
+  return {recoverable};
  }
  try{
   browser=await chromium.launch({headless:true,channel:options.browserChannel||process.env.DOCUMENTADOR_BROWSER_CHANNEL||'msedge'});
@@ -46,14 +49,22 @@ async function main(options={}){
   await page.goto(env.SISTEMA_URL,{waitUntil:'domcontentloaded',timeout:45000});
   menu=await ui.login(page,env,options.loginTimeoutMs||30000);
   readOnly=true;
-  network=attachNetworkMonitor(page,url=>ui.safeUrl(url,redact));
+  network=attachNetworkMonitor(page,url=>ui.safeUrl(url,redact),message=>{
+   const warning={label:'interface',error:redact(message),code:'PAGE_SCRIPT_ERROR'};
+   warnings.push(warning);log(`Aviso: ${warning.error}`);
+  });
   const landingUrl=page.url();
   const recover=async()=>{
    network.reset();
    log('Recuperando a página inicial para continuar a varredura.');
    await page.goto(landingUrl,{waitUntil:'domcontentloaded',timeout:30000});
    await waitForInterface(page,interfaceOptions);
-   if(await ui.findLogin(page))throw new Error('A sessão retornou à tela de login.');
+   if(await ui.findLogin(page,{strict:true})){
+    const message='A sessão expirou; autenticando novamente para continuar.';
+    notices.push({message});log(message);readOnly=false;
+    try{menu=await ui.login(page,env,options.loginTimeoutMs||30000)}finally{readOnly=true}
+    network.reset('recuperação da sessão');
+   }
   };
   flush(menu);log('Menus encontrados:',menu.length);
   async function capture(parts,kind){
@@ -78,13 +89,13 @@ async function main(options={}){
   }
   traversal=await walkMenus(page,menu,{
    maxMenus:options.maxMenus||1000,
-   open:async entry=>{network.reset();await ui.openMenu(page,entry,interfaceOptions);if(await ui.findLogin(page))throw new Error('A sessão retornou à tela de login.');},
+   open:async entry=>{const label=[...entry.parentNames||[],entry.name].join(' > ');network.reset(label);await ui.openMenu(page,entry,interfaceOptions);if(await ui.findLogin(page,{strict:true}))throw Object.assign(new Error('A sessão retornou à tela de login.'),{code:'SESSION_EXPIRED'});},
    recover,report,onQueue:()=>flush(menu),onWarning:message=>{warnings.push(message);log(message)},
    onRetry:entry=>{const message=redact(`Nova tentativa de navegação: ${[...entry.parentNames||[],entry.name].join(' > ')}`);notices.push({message});log(message)},
    visit:async entry=>{
     const parts=entry.parentNames?.length?[...entry.parentNames,entry.name]:[entry.name];
     await capture(parts,'geral');
-    await exploreContent(page,parts,{capture,report,interfaceOptions,onAction:()=>network.reset(),restore:async()=>{
+    await exploreContent(page,parts,{capture,report,interfaceOptions,onAction:label=>network.reset(label),restore:async()=>{
      await recover();
      const current=(await ui.discoverMenus(page)).find(item=>item.name===entry.name&&JSON.stringify(item.parentNames)===JSON.stringify(entry.parentNames)&&JSON.stringify(item.framePath)===JSON.stringify(entry.framePath));
      if(!current)throw new Error('Não foi possível retornar à tela após abrir o formulário.');
@@ -95,7 +106,7 @@ async function main(options={}){
   if(!traversal.visited)throw new Error('Nenhum menu pôde ser capturado. Consulte os diagnósticos da execução.');
   status=traversal.complete&&!errors.length?'complete':'partial';
  }catch(e){status='failed';await report('execução',e);throw new Error(`${errors.at(-1).error} Diagnóstico em: ${out}`);}
- finally{flush(menu);await browser?.close();log(status==='complete'?'Concluído:':status==='partial'?'Varredura parcial:':'Falha:',out,'capturas:',new Set(records.map(r=>r.image)).size,'erros:',errors.length)}
+ finally{flush(menu);await browser?.close();log(status==='complete'?'Concluído:':status==='partial'?'Varredura parcial:':'Falha:',out,'capturas:',new Set(records.map(r=>r.image)).size,'erros:',errors.length,'avisos:',warnings.length)}
  return {out,run,status,complete:status==='complete',records:records.length,errors:errors.length,pending:traversal?.pending.length||0,warnings};
 }
 if(require.main===module)main().catch(e=>{console.error('Falha:',e.message);process.exitCode=1});

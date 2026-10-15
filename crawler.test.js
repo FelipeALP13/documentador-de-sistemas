@@ -46,6 +46,7 @@ before(async () => {
       '/clientes.jsp': `<h1>Cadastro de clientes</h1><p>Conteúdo dentro do frame</p>`,
       '/relatorios.jsp': `<h1>Relatórios gerenciais</h1><button role="tab">Resumo</button><button role="tab" onclick="document.querySelector('h1').textContent='Detalhes financeiros'">Detalhes</button>`,
       '/rejected': `<title>Acesso negado</title><form onsubmit="event.preventDefault()"><input name="login"><input type="password"><button>Entrar</button></form>`,
+      '/rejected-message': `<title>Acesso negado</title><form><input name="login"><input type="password"><button type="submit">Entrar</button></form><script>document.querySelector('form').onsubmit=event=>{event.preventDefault();const container=document.createElement('div');container.id='dialogContainer';const dialog=document.createElement('div');dialog.className='dialog dialog-error';dialog.textContent='Usuário ou senha inválidos.';const close=document.createElement('button');close.id='dialog-close-button';close.type='submit';close.textContent='Fechar';dialog.append(close);container.append(dialog);document.body.append(container)}</script>`,
       '/unusual': `<form action="/modern-home"><input placeholder="Matrícula"><input type="password"><input type="image" alt="Acessar" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></form>`,
       '/animated-login': `<style>.entering{transform:translateX(200vw);pointer-events:none}</style><form class="entering" action="/modern-home"><input id="animated-user" autocomplete="username"><input id="animated-password" type="password"><button type="submit">Entrar</button></form><script>setTimeout(()=>document.querySelector('form').classList.remove('entering'),650)</script>`,
       '/delayed-menu-login': modern.replace('/modern-home','/delayed-menu-home'),
@@ -235,6 +236,21 @@ test('falha de login produz diagnóstico sem credenciais, query, fragmento ou va
   for (const value of [secret.SISTEMA_USER, secret.SISTEMA_PASS, 'token-privado', 'fragmento-privado']) assert.ok(!serialized.includes(value));
   assert.ok(!data.frames[0].selectors.some(e => 'value' in e));
   assert.equal(JSON.parse(fs.readFileSync(path.join(out, 'scan-manifest.json'))).records.length, 0);
+});
+
+test('recusa de autenticação preserva a mensagem segura do sistema no diagnóstico', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-auth-rejected-'));
+  const secret = credentials('/rejected-message');
+  await assert.rejects(
+    scan({ credentials: secret, artifactsRoot: root, log() {}, loginTimeoutMs: 4000 }),
+    /Autenticação recusada pelo sistema: Usuário ou senha inválidos\./,
+  );
+  const out = path.join(root, fs.readdirSync(root)[0]);
+  const file = fs.readdirSync(out).find(name => name.startsWith('diagnostico-'));
+  const diagnostic = JSON.parse(fs.readFileSync(path.join(out, file), 'utf8'));
+  assert.equal(diagnostic.code, 'AUTH_REJECTED');
+  assert.ok(diagnostic.interface.some(frame => frame.dialogs.some(dialog => dialog.text.includes('Usuário ou senha inválidos.'))));
+  assert.ok(!JSON.stringify(diagnostic).includes(secret.SISTEMA_PASS));
 });
 
 test('diagnóstico remove segredos com aspas, escapes e codificação de URL', async () => {

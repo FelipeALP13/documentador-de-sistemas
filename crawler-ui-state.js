@@ -1,5 +1,5 @@
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-const dialogs = '[role="dialog"],[role="alertdialog"],.swal2-popup,.swal2-modal,.sweet-alert,.swal-modal,.bootbox,.modal';
+const dialogs = '[role="dialog"],[role="alertdialog"],.swal2-popup,.swal2-modal,.sweet-alert,.swal-modal,.bootbox,.modal,.dialog';
 const loaders = '.blockUI.blockOverlay,.blockUI.blockMsg,.loadingoverlay,.loading-overlay,.loader-overlay,.preloader,[aria-busy="true"],[role="progressbar"]';
 
 async function snapshot(frame) {

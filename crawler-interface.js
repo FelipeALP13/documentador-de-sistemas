@@ -138,6 +138,10 @@ async function login(page, credentials, timeout = 30000) {
   const submitted = new Set();
   let usedPassword = false, authenticatedSince = 0;
   while (Date.now() < deadline) {
+    if (submitted.size) {
+      const rejection = await authenticationFailure(page, credentials);
+      if (rejection) throw Object.assign(new Error(`Autenticação recusada pelo sistema: ${rejection}`), { code: 'AUTH_REJECTED' });
+    }
     const form = await findLogin(page, { strict: usedPassword });
     if (!form) {
       const challenge = await authenticationChallenge(page);
@@ -167,7 +171,28 @@ async function login(page, credentials, timeout = 30000) {
       const menus = await discoverMenus(page);
       if (menus.some(e => e.visible)) return menus;
   }
+  const rejection = await authenticationFailure(page, credentials);
+  if (rejection) throw Object.assign(new Error(`Autenticação recusada pelo sistema: ${rejection}`), { code: 'AUTH_REJECTED' });
   throw new Error('Login não confirmado: as credenciais não foram aceitas, há uma etapa adicional ou a interface não ficou disponível.');
+}
+
+async function authenticationFailure(page, credentials = {}) {
+  const selector = '[role="alert"],[role="alertdialog"],[aria-live="assertive"],.alert-danger,.error-message,.dialog-error,#dialogContainer';
+  const redact = redactor([credentials.SISTEMA_USER, credentials.SISTEMA_PASS]);
+  for (const frame of page.frames()) {
+    const messages = await frame.locator(selector).evaluateAll(elements => elements.filter(el => {
+      const style = getComputedStyle(el);
+      return !!el.getClientRects().length && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    }).map(el => (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 500))).catch(() => []);
+    for (const message of messages) {
+      const normalized = normalize(message);
+      const rejected = /(?:usuario|utilizador|user|email|e-mail|senha|password|credencia).{0,100}(?:invalid|incorret|nao reconhec|nao encontr|bloquead|desativad|inativ|expirad)/.test(normalized)
+        || /(?:invalid|incorrect|wrong).{0,60}(?:user|password|credential)/.test(normalized)
+        || /acesso negado|authentication failed|login failed|falha.{0,30}autenticacao/.test(normalized);
+      if (rejected) return redact(message.replace(/\b(?:ok|fechar|close)\s*$/i, '').trim());
+    }
+  }
+  return null;
 }
 
 async function authenticationChallenge(page) {

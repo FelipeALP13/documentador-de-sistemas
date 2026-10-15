@@ -34,6 +34,11 @@ before(async () => {
         : `<main>Relatório após nova autenticação</main>`);
       return;
     }
+    if (route === '/spa-home') {
+      if (req.method !== 'POST') { res.statusCode = 404; res.end('A rota interna não aceita recarregamento direto'); return; }
+      res.end(`<nav><a href="/missing.jsp">Indisponível</a><a href="#" onclick="document.querySelector('main').textContent='Consulta disponível'">Consulta</a></nav><main>Aplicação autenticada</main>`);
+      return;
+    }
     const pages = {
       '/modern': modern,
       '/modern-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Painel de vendas'">Visão geral</a><div class="grupo"><a href="#" aria-expanded="false" onclick="this.nextElementSibling.hidden=false;this.setAttribute('aria-expanded','true')">Cadastros</a><div hidden><a href="#" onclick="document.querySelector('main').innerHTML='<h1>Clientes</h1>'">Clientes</a></div></div><a href="/logout">Sair</a></nav><main>Bem-vindo</main>`,
@@ -69,6 +74,7 @@ before(async () => {
       '/settings-field-login': modern.replace('/modern-home','/settings-field-home'),
       '/settings-field-home': `<nav><a href="#" onclick="document.querySelector('main').hidden=false">Configuração</a></nav><main hidden><form><label>Conta<input name="account"></label><button type="button">Salvar</button></form></main>`,
       '/reauth-login': `<form action="/reauth-home" method="post"><input name="usuario_login"><input type="password" name="senha_login"><button type="submit">Entrar</button></form>`,
+      '/spa-login': `<form action="/spa-home" method="post"><input autocomplete="username"><input type="password"><button type="submit">Entrar</button></form>`,
       '/forms-login': modern.replace('/modern-home','/forms-home'),
       '/forms-home': `<nav><a href="/forms-home">Cadastros</a></nav><div id="content"><h1>Lista de cadastros</h1><input type="button" value="Novo cliente" onclick="openForm('Cliente')"><a href="#" onclick="openForm('Proposta')">Criar uma nova proposta</a></div><template id="ficha"><div role="dialog"><h1>Ficha</h1><form action="/forbidden-save" method="post"><input name="nome"><button type="submit">Salvar</button><button type="button" onclick="fetch('/forbidden-delete')">Excluir</button><a href="#" data-toggle="tab" onclick="document.querySelector('h2').textContent='Dados gerais'">Geral</a><a href="#" data-toggle="tab" onclick="document.querySelector('h2').textContent='Endereços'">Endereço</a><h2>Dados gerais</h2></form></div></template><script>function openForm(name){const target=document.getElementById('content');target.replaceChildren(document.getElementById('ficha').content.cloneNode(true));target.querySelector('h1').textContent=name}</script>`,
       '/http-login': modern.replace('/modern-home','/http-home'),
@@ -191,6 +197,37 @@ test('menus SGE no header são descobertos antes das classes Bootstrap', async (
   assert.ok(manifest.records.some(record => record.label === 'BI > Painel' && record.text.includes('Painel SGE')));
   assert.ok(manifest.records.some(record => record.label === 'Financeiro > Lançamentos' && record.text.includes('Lançamentos SGE')));
   assert.ok(!manifest.records.some(record => record.label === 'Página inicial'));
+});
+
+test('controle de menu usa clique de ponteiro sem disparar atalho de teclado', async () => {
+  const page = await newPage();
+  try {
+    await page.setContent(`<button type="button" onkeydown="window.keyboard=(window.keyboard||0)+1" onclick="window.pointer=(window.pointer||0)+1">Dashboard</button>`);
+    await ui.activateMenuControl(page.locator('button'));
+    assert.deepEqual(await page.evaluate(() => ({ pointer: window.pointer || 0, keyboard: window.keyboard || 0 })), { pointer: 1, keyboard: 0 });
+  } finally { await page.close(); }
+});
+
+test('seletor semântico de menu sobrevive à remoção de contêiner do portal', async () => {
+  const page = await newPage();
+  try {
+    await page.setContent(`<div id="portal-anterior"><button type="button">Outro controle</button></div><nav><button type="button" onclick="document.querySelector('main').textContent='Dashboard aberto'">Dashboard</button></nav><main>Início</main>`);
+    const dashboard = (await ui.discoverMenus(page)).find(entry => entry.name === 'Dashboard');
+    assert.match(dashboard.selector, /^xpath=/);
+    await page.locator('#portal-anterior').evaluate(element => element.remove());
+    await ui.openMenu(page, dashboard);
+    assert.equal(await page.locator('main').innerText(), 'Dashboard aberto');
+  } finally { await page.close(); }
+});
+
+test('recuperação retorna pela URL de acesso quando rota interna da SPA não aceita reload', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-spa-recovery-'));
+  const result = await scan({ credentials: credentials('/spa-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000 });
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.equal(result.status, 'complete');
+  assert.equal(result.errors, 0);
+  assert.ok(manifest.warnings.some(warning => warning.code === 'HTTP_404'));
+  assert.ok(manifest.records.some(record => record.label === 'Consulta' && record.text.includes('Consulta disponível')));
 });
 
 test('erro JavaScript interno vira aviso e a tela ainda é capturada', async () => {

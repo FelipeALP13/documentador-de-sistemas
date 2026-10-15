@@ -53,11 +53,10 @@ async function main(options={}){
    const warning={label:'interface',error:redact(message),code:'PAGE_SCRIPT_ERROR'};
    warnings.push(warning);log(`Aviso: ${warning.error}`);
   });
-  const landingUrl=page.url();
   const recover=async()=>{
    network.reset();
-   log('Recuperando a página inicial para continuar a varredura.');
-   await page.goto(landingUrl,{waitUntil:'domcontentloaded',timeout:30000});
+   log('Recuperando pela URL de acesso para continuar a varredura.');
+   await page.goto(env.SISTEMA_URL,{waitUntil:'domcontentloaded',timeout:30000});
    await waitForInterface(page,interfaceOptions);
    if(await ui.findLogin(page,{strict:true})){
     const message='A sessão expirou; autenticando novamente para continuar.';

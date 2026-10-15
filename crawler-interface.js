@@ -28,6 +28,14 @@ async function inspect(frame) {
         const candidate = unique(`${tag}[${attribute}="${CSS.escape(value)}"]`);
         if (candidate) return candidate;
       }
+      const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (text && !(text.includes('"') && text.includes("'"))) {
+        const literal = text.includes('"') ? `'${text}'` : `"${text}"`;
+        const xpath = `//${tag}[normalize-space(.)=${literal}]`;
+        try {
+          if (document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null).snapshotLength === 1) return `xpath=${xpath}`;
+        } catch {}
+      }
       const parts = [];
       for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
         const tag = node.tagName.toLowerCase();
@@ -261,18 +269,16 @@ async function activateMenuControl(control) {
     return el.matches('a[href],button,input[type="button"],[role="link"]');
   });
   if (!native) return control.click({ timeout: 5000 });
-  await control.focus();
-  const usable = await control.evaluate(el => {
-    const r = el.getBoundingClientRect();
-    const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-    return !el.disabled && el.getAttribute('aria-disabled') !== 'true' && (hit === el || el.contains(hit));
-  });
-  if (!usable) {
+  try {
+    // Some SPAs bind pointer activation and keyboard activation differently.
+    // Playwright's native click waits for visibility, stability and hit testing
+    // while preserving the same behavior a user gets from the menu.
+    await control.click({ timeout: 5000 });
+  } catch {
     const error = new Error('O item do menu está oculto, desabilitado ou coberto por outro elemento.');
     error.code = 'MENU_BLOCKED';
     throw error;
   }
-  await control.press('Enter', { timeout: 5000 });
 }
 
 function redactor(secrets) {

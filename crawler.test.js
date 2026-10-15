@@ -47,6 +47,9 @@ before(async () => {
       '/relatorios.jsp': `<h1>Relatórios gerenciais</h1><button role="tab">Resumo</button><button role="tab" onclick="document.querySelector('h1').textContent='Detalhes financeiros'">Detalhes</button>`,
       '/rejected': `<title>Acesso negado</title><form onsubmit="event.preventDefault()"><input name="login"><input type="password"><button>Entrar</button></form>`,
       '/unusual': `<form action="/modern-home"><input placeholder="Matrícula"><input type="password"><input type="image" alt="Acessar" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></form>`,
+      '/animated-login': `<style>.entering{transform:translateX(200vw);pointer-events:none}</style><form class="entering" action="/modern-home"><input id="animated-user" autocomplete="username"><input id="animated-password" type="password"><button type="submit">Entrar</button></form><script>setTimeout(()=>document.querySelector('form').classList.remove('entering'),650)</script>`,
+      '/delayed-menu-login': modern.replace('/modern-home','/delayed-menu-home'),
+      '/delayed-menu-home': `<main>Carregando módulos</main><script>setTimeout(()=>{const nav=document.createElement('nav');const link=document.createElement('a');link.href='#';link.textContent='Módulo tardio';link.onclick=()=>document.querySelector('main').textContent='Módulo carregado';nav.append(link);document.body.prepend(nav)},2200)</script>`,
       '/alert-login': modern.replace('/modern-home','/alert-home'),
       '/alert-home': `<style>.swal2-container,.blockOverlay{position:fixed;inset:0;background:#0008;z-index:10}.swal2-popup{background:white;margin:100px;padding:20px}.blockOverlay{z-index:20}</style><nav><a href="#" onclick="document.querySelector('main').textContent='BI - Operacional';setTimeout(showAlert,100)">Operacional</a><a href="#" onclick="document.querySelector('main').textContent='Lançamento financeiro'">FI</a></nav><main>Início</main><script>function showAlert(){const d=document.createElement('div');d.className='swal2-container';d.innerHTML='<div class="swal2-popup" role="dialog"><h2>Atenção!</h2><p>Sem dados para serem trabalhados</p><button type="button">OK</button></div>';d.querySelector('button').onclick=()=>d.remove();document.body.append(d);const loader=document.createElement('div');loader.className='blockUI blockOverlay';document.body.append(loader);setTimeout(()=>loader.remove(),900)}</script>`,
       '/blocked-login': modern.replace('/modern-home','/blocked-home'),
@@ -124,6 +127,25 @@ test('campos sem IDs e botão image são detectados', async () => {
     assert.equal(form.user.placeholder, 'Matrícula');
     assert.equal(form.button.type, 'image');
     assert.ok((await ui.login(page, credentials('/unusual'), 3000)).length);
+  } finally { await page.close(); }
+});
+
+test('login aguarda formulário animado ficar realmente acionável', async () => {
+  const page = await newPage();
+  try {
+    await page.goto(base + '/animated-login');
+    assert.equal((await ui.findLogin(page)).button.selector, 'button[type="submit"]');
+    const menus = await ui.login(page, credentials('/animated-login'), 4000);
+    assert.ok(menus.some(entry => entry.name === 'Visão geral'));
+  } finally { await page.close(); }
+});
+
+test('login aguarda menus carregados de forma assíncrona', async () => {
+  const page = await newPage();
+  try {
+    await page.goto(base + '/delayed-menu-login');
+    const menus = await ui.login(page, credentials('/delayed-menu-login'), 7000);
+    assert.ok(menus.some(entry => entry.name === 'Módulo tardio' && !entry.virtual));
   } finally { await page.close(); }
 });
 

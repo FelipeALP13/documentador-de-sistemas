@@ -4,6 +4,7 @@ const { waitForInterface, diagnosticState } = require('./crawler-ui-state');
 const { networkDiagnostics } = require('./crawler-network');
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+const authenticatedMenuSettleMs = 5000;
 const normalize = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 const unsafe = /(?:^|\b)(sair|logout|logoff|excluir|exclusao|deletar|delete|remover|salvar|gravar|enviar|submeter|publicar|pagar|confirmar|cancelar|encerrar|aprovar|reprovar|bloquear|desativar|inativar)(?:\b|$)/i;
 const controls = 'input,button,a,select,[role="button"],[role="link"],[role="menuitem"],[onclick]';
@@ -13,6 +14,20 @@ async function inspect(frame) {
   return frame.locator(controls).evaluateAll(elements => {
     const selector = el => {
       if (el.id) return '#' + CSS.escape(el.id);
+      const tag = el.tagName.toLowerCase();
+      const unique = candidate => {
+        try { return document.querySelectorAll(candidate).length === 1 ? candidate : null; }
+        catch { return null; }
+      };
+      // Prefer selectors that survive portal transitions and sibling removal.
+      // Positional paths are retained only when no unique structural attribute
+      // exists, which is common for repeated navigation items.
+      for (const attribute of ['name', 'aria-label', 'autocomplete', 'type', 'href']) {
+        const value = el.getAttribute(attribute);
+        if (!value) continue;
+        const candidate = unique(`${tag}[${attribute}="${CSS.escape(value)}"]`);
+        if (candidate) return candidate;
+      }
       const parts = [];
       for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
         const tag = node.tagName.toLowerCase();
@@ -130,7 +145,7 @@ async function login(page, credentials, timeout = 30000) {
       if (usedPassword) {
         authenticatedSince ||= Date.now();
         const menus = await discoverMenus(page);
-        if (menus.some(e => e.visible && !e.virtual) || Date.now() - authenticatedSince >= 1500) return menus;
+        if (menus.some(e => e.visible && !e.virtual) || Date.now() - authenticatedSince >= authenticatedMenuSettleMs) return menus;
       }
       await pause(200);
       continue;
@@ -145,7 +160,7 @@ async function login(page, credentials, timeout = 30000) {
     }
     submitted.add(fingerprint);
     const control = form.button ? form.frame.locator(form.button.selector) : form.frame.locator((form.password || form.user).selector);
-    await activateLoginControl(control);
+    await activateLoginControl(control, !!form.button);
     await pause(250);
   }
   if (usedPassword && !(await findLogin(page, { strict: true }))) {
@@ -165,16 +180,17 @@ async function authenticationChallenge(page) {
   return null;
 }
 
-async function activateLoginControl(control) {
+async function activateLoginControl(control, isButton = true) {
   await control.waitFor({ state: 'visible', timeout: 15000 });
-  await control.focus();
-  const ready = await control.evaluate(el => {
-    const rect = el.getBoundingClientRect();
-    const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-    return !el.disabled && el.getAttribute('aria-disabled') !== 'true' && (hit === el || el.contains(hit));
-  });
-  if (!ready) throw new Error('O controle de autenticação está desabilitado ou coberto por outra janela.');
-  await control.press('Enter', { timeout: 15000 });
+  try {
+    // A native click waits until animated login panels enter the viewport and
+    // accept pointer events. Keeping readiness and activation in one action
+    // also supports portals that remove siblings during the transition.
+    if (isButton) await control.click({ timeout: 15000 });
+    else await control.press('Enter', { timeout: 15000 });
+  } catch {
+    throw new Error('O controle de autenticação não ficou disponível; ele está desabilitado, fora da área visível ou coberto por outra janela.');
+  }
 }
 
 async function openMenu(page, entry, options = {}) {

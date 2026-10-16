@@ -12,7 +12,7 @@
     <header><span class="eyebrow">DOCUMENTADOR DE SISTEMAS</span><h1>Varredura e geração do manual</h1><p>Capture as telas às quais sua conta tem acesso e gere o manual a partir das imagens.</p></header>
     <section>
       <h2>1. Acesso ao sistema</h2>
-      <div class="grid"><label class="wide">URL do sistema<input id="url" type="url" placeholder="https://sistema.exemplo.com" autocomplete="url"></label><label>Usuário ou e-mail<input id="user" type="text" autocomplete="username"></label><label>Senha<input id="password" type="password" autocomplete="current-password"></label><label>Navegador<select id="browser"><option value="msedge">Microsoft Edge</option><option value="chrome">Google Chrome</option></select></label></div>
+      <div class="grid"><label class="wide">URL do sistema<input id="url" type="url" placeholder="https://sistema.exemplo.com" autocomplete="url"></label><label>Usuário ou e-mail<input id="user" type="text" autocomplete="username"></label><div class="field"><label for="password">Senha</label><div class="password-field"><input id="password" type="password" autocomplete="current-password"><button id="togglePassword" type="button" class="password-toggle" aria-controls="password" aria-pressed="false" aria-label="Mostrar senha">Mostrar</button></div></div><label>Navegador<select id="browser"><option value="msedge">Microsoft Edge</option><option value="chrome">Google Chrome</option></select></label></div>
       <p class="hint">O navegador escolhido precisa estar instalado neste computador. A varredura abre formulários, mas não salva cadastros nem envia mensagens.</p>
     </section>
     <section>

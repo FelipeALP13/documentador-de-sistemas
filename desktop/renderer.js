@@ -22,7 +22,7 @@ function data() {
 async function run(action, started) {
   if (running) return;
   running = true;
-  document.querySelectorAll('button').forEach(button => button.disabled = true);
+  document.querySelectorAll('button:not(.password-toggle)').forEach(button => button.disabled = true);
   $('status').textContent = started;
   log(started);
   try {
@@ -37,9 +37,20 @@ async function run(action, started) {
     log(error.message);
   } finally {
     running = false;
-    document.querySelectorAll('button').forEach(button => button.disabled = false);
+    document.querySelectorAll('button:not(.password-toggle)').forEach(button => button.disabled = false);
   }
 }
+
+$('togglePassword').addEventListener('click', () => {
+  const input = $('password');
+  const button = $('togglePassword');
+  const visible = input.type === 'password';
+  input.type = visible ? 'text' : 'password';
+  button.textContent = visible ? 'Ocultar' : 'Mostrar';
+  button.setAttribute('aria-label', visible ? 'Ocultar senha' : 'Mostrar senha');
+  button.setAttribute('aria-pressed', String(visible));
+  input.focus();
+});
 
 window.documentador.onProgress(log);
 window.documentador.defaults().then(({ folder, version }) => { $('folder').value = folder; document.title = `Documentador de Sistemas ${version}`; });

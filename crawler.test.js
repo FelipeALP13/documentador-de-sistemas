@@ -649,15 +649,15 @@ test('monitor ignora credenciais de login e descarta erros da ação anterior', 
   network.dispose();
 });
 
-test('Novo sem efeito não é registrado como formulário capturado', async () => {
+test('Novo sem efeito vira aviso recuperável e não é registrado como formulário capturado', async () => {
   const page = await newPage();
   await page.setContent('<button type="button">Novo</button>');
   const failures = [];
   await exploreContent(page, ['Clientes'], {
     capture: async () => assert.fail('Não há formulário para capturar'),
-    report: async (_label, error) => failures.push(error.code), restore: async () => {},
+    report: async (_label, error) => failures.push({ code: error.code, recoverable: error.recoverable }), restore: async () => {},
   });
-  assert.deepEqual(failures, ['FORM_NOT_OPENED']);
+  assert.deepEqual(failures, [{ code: 'FORM_NOT_OPENED', recoverable: true }]);
 });
 
 test('abas e botões atrás de uma janela modal não são explorados', async () => {

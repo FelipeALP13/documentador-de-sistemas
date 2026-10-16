@@ -178,7 +178,7 @@ async function exploreContent(page, parts, { capture, report, restore, interface
         await waitOn(formPage);
         const deadline = Date.now() + 5000;
         while ((await signature(formPage)) === before) {
-          if (Date.now() >= deadline) throw Object.assign(new Error('O botão foi acionado, mas nenhum formulário ou tela nova foi aberto.'), { code: 'FORM_NOT_OPENED' });
+          if (Date.now() >= deadline) throw Object.assign(new Error('O controle Novo não abriu outra tela; nenhuma alteração foi realizada.'), { code: 'FORM_NOT_OPENED', recoverable: true });
           await formPage.waitForTimeout(150);
           await waitOn(formPage);
         }

@@ -12,7 +12,7 @@ const { walkMenus } = require('./crawler-navigation');
 const { exploreContent, controls: contentControls } = require('./crawler-content');
 const { attachNetworkMonitor } = require('./crawler-network');
 
-let server, base, browser, expireRequests = 0;
+let server, base, browser, expireRequests = 0, spaLoginRequests = 0, spaFormLoginRequests = 0;
 const requests = [];
 const modern = `<form action="/modern-home"><input type="search" placeholder="Pesquisar"><input id="email" autocomplete="username"><input id="senha" type="password"><button type="submit">Entrar</button></form>`;
 const legacy = `<title>Sistema legado</title><form id="frmLogin" action="/frames"><label for="usuario">Usuário</label><input id="usuario" name="usuario_login"><input id="senha" name="senha_login" type="password"><input type="submit" value="Entrar"></form>`;
@@ -37,6 +37,21 @@ before(async () => {
     if (route === '/spa-home') {
       if (req.method !== 'POST') { res.statusCode = 404; res.end('A rota interna não aceita recarregamento direto'); return; }
       res.end(`<nav><a href="/missing.jsp">Indisponível</a><a href="#" onclick="document.querySelector('main').textContent='Consulta disponível'">Consulta</a></nav><main>Aplicação autenticada</main>`);
+      return;
+    }
+    if (route === '/spa-form-home') {
+      if (req.method !== 'POST') { res.statusCode = 404; res.end('A rota interna do formulário não aceita recarregamento direto'); return; }
+      res.end(`<nav><button type="button" onclick="showList()">Cadastros</button></nav><main></main><script>function showList(){document.querySelector('main').innerHTML='<h1>Cadastros</h1><button type="button" onclick="showForm()">Novo cliente</button>'}function showForm(){document.querySelector('main').innerHTML='<h1>Novo cliente</h1><form><input name="nome"><button type="submit">Salvar</button></form>'}showList()</script>`);
+      return;
+    }
+    if (route === '/spa-login') {
+      spaLoginRequests++;
+      res.end(`<form action="/spa-home" method="post"><input autocomplete="username"><input type="password"><button type="submit">Entrar</button></form>`);
+      return;
+    }
+    if (route === '/spa-form-login') {
+      spaFormLoginRequests++;
+      res.end(`<form action="/spa-form-home" method="post"><input autocomplete="username"><input type="password"><button type="submit">Entrar</button></form>`);
       return;
     }
     const pages = {
@@ -74,7 +89,6 @@ before(async () => {
       '/settings-field-login': modern.replace('/modern-home','/settings-field-home'),
       '/settings-field-home': `<nav><a href="#" onclick="document.querySelector('main').hidden=false">Configuração</a></nav><main hidden><form><label>Conta<input name="account"></label><button type="button">Salvar</button></form></main>`,
       '/reauth-login': `<form action="/reauth-home" method="post"><input name="usuario_login"><input type="password" name="senha_login"><button type="submit">Entrar</button></form>`,
-      '/spa-login': `<form action="/spa-home" method="post"><input autocomplete="username"><input type="password"><button type="submit">Entrar</button></form>`,
       '/forms-login': modern.replace('/modern-home','/forms-home'),
       '/forms-home': `<nav><a href="/forms-home">Cadastros</a></nav><div id="content"><h1>Lista de cadastros</h1><input type="button" value="Novo cliente" onclick="openForm('Cliente')"><a href="#" onclick="openForm('Proposta')">Criar uma nova proposta</a></div><template id="ficha"><div role="dialog"><h1>Ficha</h1><form action="/forbidden-save" method="post"><input name="nome"><button type="submit">Salvar</button><button type="button" onclick="fetch('/forbidden-delete')">Excluir</button><a href="#" data-toggle="tab" onclick="document.querySelector('h2').textContent='Dados gerais'">Geral</a><a href="#" data-toggle="tab" onclick="document.querySelector('h2').textContent='Endereços'">Endereço</a><h2>Dados gerais</h2></form></div></template><script>function openForm(name){const target=document.getElementById('content');target.replaceChildren(document.getElementById('ficha').content.cloneNode(true));target.querySelector('h1').textContent=name}</script>`,
       '/http-login': modern.replace('/modern-home','/http-home'),
@@ -220,7 +234,8 @@ test('seletor semântico de menu sobrevive à remoção de contêiner do portal'
   } finally { await page.close(); }
 });
 
-test('recuperação retorna pela URL de acesso quando rota interna da SPA não aceita reload', async () => {
+test('recuperação usa o histórico antes de recarregar rotas internas da SPA', async () => {
+  spaLoginRequests = 0;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-spa-recovery-'));
   const result = await scan({ credentials: credentials('/spa-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000 });
   const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
@@ -228,6 +243,19 @@ test('recuperação retorna pela URL de acesso quando rota interna da SPA não a
   assert.equal(result.errors, 0);
   assert.ok(manifest.warnings.some(warning => warning.code === 'HTTP_404'));
   assert.ok(manifest.records.some(record => record.label === 'Consulta' && record.text.includes('Consulta disponível')));
+  assert.equal(spaLoginRequests, 1);
+});
+
+test('retorno de Novo reutiliza o menu lateral sem recarregar a SPA autenticada', async () => {
+  spaFormLoginRequests = 0;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-spa-form-'));
+  const result = await scan({ credentials: credentials('/spa-form-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000 });
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.equal(result.status, 'complete');
+  assert.equal(result.errors, 0);
+  assert.ok(manifest.records.some(record => record.label === 'Cadastros'));
+  assert.ok(manifest.records.some(record => record.label === 'Cadastros > Novo cliente'));
+  assert.equal(spaFormLoginRequests, 1);
 });
 
 test('erro JavaScript interno vira aviso e a tela ainda é capturada', async () => {

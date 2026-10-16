@@ -15,15 +15,34 @@ async function main(options={}){
  const out=path.join(root,run);
  const records=[];const errors=[];const hashes=new Map();
  const warnings=[];const notices=[];
+ const blockedWarnings=new Set();
  let status='running',traversal=null;
  const log=options.log||console.log;
  const secrets=[env.SISTEMA_USER,env.SISTEMA_PASS];
  const redact=ui.redactor(secrets);
  function flush(menu){fs.writeFileSync(path.join(out,'scan-manifest.json'),JSON.stringify({run,startedAt:run,finishedAt:status==='running'?null:new Date().toISOString(),status,traversal,menu:menu.map(m=>({name:m.name,framePath:m.framePath})),records,errors,warnings,notices},(key,value)=>['image','duplicateOf','diagnostic','sha256','run','startedAt','finishedAt'].includes(key)?value:typeof value==='string'?redact(value):value,2))}
  fs.mkdirSync(out,{recursive:true});
- let browser,page,network,readOnly=false;
+ let browser,context,page,network,readOnly=false,authNavigation=null,allowAuthReplay=false,authenticatedUrl='';
  let menu=[];
- const interfaceOptions={timeout:options.interfaceTimeoutMs||30000,failureCheck:()=>network?.failure(),onNotice:message=>{notices.push({message});log(message)}};
+ const interfaceOptions={timeout:options.interfaceTimeoutMs||30000,allowBlocked:true,failureCheck:()=>network?.failure(),onNotice:message=>{notices.push({message});log(message)}};
+ const handleRequest=route=>{
+  const settle=promise=>promise.catch(error=>{if(!/Route is already handled/i.test(error.message))throw error});
+  const request=route.request(),method=request.method().toUpperCase();
+  if(!readOnly&&request.isNavigationRequest()&&method==='POST')authNavigation={method,url:request.url()};
+  const description=`${request.url()} ${request.postData()||''}`;
+  const unsafeMutation=/(?:^|[\/_?&=.-])(delete|remove|destroy|save|update|create|submit|approve|reject|publish|payment|pay|cancel|logout|signout)(?:$|[\/_?&=.-])/i.test(description);
+  const destructiveNavigation=/(?:^|[\/_?&=.-])(delete|remove|destroy|approve|reject|publish|payment|pay|cancel|logout|signout)(?:$|[\/_?&=.-])/i.test(request.url());
+  const authReplay=allowAuthReplay&&authNavigation&&method===authNavigation.method&&request.url()===authNavigation.url;
+  const blocked=['PUT','PATCH','DELETE'].includes(method)||(readOnly&&((method==='POST'&&request.isNavigationRequest()&&!authReplay)||(method!=='GET'&&method!=='HEAD'&&unsafeMutation&&!authReplay)||(method==='GET'&&destructiveNavigation)));
+  if(blocked){notices.push({message:'Uma tentativa de alteração foi bloqueada pelo modo somente leitura.'});return settle(route.abort())}
+  return settle(route.continue());
+ };
+ const createContextPage=async()=>{
+  context=await browser.newContext({viewport:{width:1280,height:900},deviceScaleFactor:1});
+  await context.route('**/*',handleRequest);
+  page=await context.newPage();page.setDefaultTimeout(5000);
+  page.on('dialog',dialog=>dialog.dismiss().catch(()=>{}));
+ };
  async function report(label,e){
   const file=await ui.writeDiagnostic(page,out,e,secrets,env.SISTEMA_URL);
   const recoverable=!!e.recoverable||/^HTTP_(?:\d+|5XX)$/.test(e.code||'')||e.code==='NETWORK_FAILURE';
@@ -34,52 +53,86 @@ async function main(options={}){
  }
  try{
   browser=await chromium.launch({headless:true,channel:options.browserChannel||process.env.DOCUMENTADOR_BROWSER_CHANNEL||'msedge'});
-  const context=await browser.newContext({viewport:{width:1280,height:900},deviceScaleFactor:1});
-  await context.route('**/*',route=>{
-   const request=route.request(),method=request.method().toUpperCase();
-   const description=`${request.url()} ${request.postData()||''}`;
-   const unsafeMutation=/(?:^|[\/_?&=.-])(delete|remove|destroy|save|update|create|submit|approve|reject|publish|payment|pay|cancel|logout|signout)(?:$|[\/_?&=.-])/i.test(description);
-   const destructiveNavigation=/(?:^|[\/_?&=.-])(delete|remove|destroy|approve|reject|publish|payment|pay|cancel|logout|signout)(?:$|[\/_?&=.-])/i.test(request.url());
-   const blocked=['PUT','PATCH','DELETE'].includes(method)||(readOnly&&((method==='POST'&&request.isNavigationRequest())||(method!=='GET'&&method!=='HEAD'&&unsafeMutation)||(method==='GET'&&destructiveNavigation)));
-   if(blocked){notices.push({message:'Uma tentativa de alteração foi bloqueada pelo modo somente leitura.'});return route.abort()}
-   return route.continue();
-  });
-  page=await context.newPage();page.setDefaultTimeout(5000);
-  page.on('dialog',dialog=>dialog.dismiss().catch(()=>{}));
+  await createContextPage();
   await page.goto(env.SISTEMA_URL,{waitUntil:'domcontentloaded',timeout:45000});
   menu=await ui.login(page,env,options.loginTimeoutMs||30000);
+  authenticatedUrl=page.url().split('#')[0];
   readOnly=true;
   network=attachNetworkMonitor(page,url=>ui.safeUrl(url,redact),message=>{
    const warning={label:'interface',error:redact(message),code:'PAGE_SCRIPT_ERROR'};
    warnings.push(warning);log(`Aviso: ${warning.error}`);
   });
-  const recover=async()=>{
-   network.reset();
-   log('Recuperando pela URL de acesso para continuar a varredura.');
-   await page.goto(env.SISTEMA_URL,{waitUntil:'domcontentloaded',timeout:30000});
-   await waitForInterface(page,interfaceOptions);
+  const resumeCurrent=async()=>{
    if(await ui.findLogin(page,{strict:true})){
     const message='A sessão expirou; autenticando novamente para continuar.';
     notices.push({message});log(message);readOnly=false;
-    try{menu=await ui.login(page,env,options.loginTimeoutMs||30000)}finally{readOnly=true}
+    try{menu=await ui.login(page,env,options.loginTimeoutMs||30000);authenticatedUrl=page.url().split('#')[0]}finally{readOnly=true}
     network.reset('recuperação da sessão');
    }
+   const discovered=await ui.discoverMenus(page);
+   const available=discovered.some(item=>!item.virtual)||discovered.some(item=>item.virtual)&&page.url().split('#')[0]===authenticatedUrl;
+   if(!available)return false;
+   await waitForInterface(page,interfaceOptions);
+   return true;
+  };
+  const recover=async()=>{
+   network?.reset('recuperação');
+   if(await resumeCurrent().catch(()=>false)){log('Continuando pela interface autenticada atual.');return}
+   log('Retornando pelo histórico para continuar a varredura.');
+   for(let attempt=0;attempt<4;attempt++){
+    allowAuthReplay=true;
+    const response=await page.goBack({waitUntil:'domcontentloaded',timeout:15000}).catch(()=>null).finally(()=>{allowAuthReplay=false});
+    network?.reset('recuperação pelo histórico');
+    if(await resumeCurrent().catch(()=>false))return;
+    if(!response)break;
+   }
+   log('Recuperando pela URL de acesso para continuar a varredura.');
+   let response=await page.goto(env.SISTEMA_URL,{waitUntil:'domcontentloaded',timeout:30000});
+   network?.reset('recuperação pela URL de acesso');
+   if((!response||response.status()<400)&&await resumeCurrent().catch(()=>false))return;
+   log('Reiniciando a sessão temporária para recuperar a interface.');
+   network?.dispose();network=null;
+   await browser.close();
+   browser=await chromium.launch({headless:true,channel:options.browserChannel||process.env.DOCUMENTADOR_BROWSER_CHANNEL||'msedge'});
+   authNavigation=null;allowAuthReplay=false;
+   await createContextPage();
+   readOnly=false;
+   try{
+    response=await page.goto(env.SISTEMA_URL,{waitUntil:'domcontentloaded',timeout:30000});
+    if(response&&response.status()>=400)throw Object.assign(new Error(`O servidor retornou HTTP ${response.status()} ao abrir ${ui.safeUrl(response.url(),redact)}.`),{code:`HTTP_${response.status()}`});
+    menu=await ui.login(page,env,options.loginTimeoutMs||30000);
+    authenticatedUrl=page.url().split('#')[0];
+   }finally{readOnly=true}
+   network=attachNetworkMonitor(page,url=>ui.safeUrl(url,redact),message=>{
+    const warning={label:'interface',error:redact(message),code:'PAGE_SCRIPT_ERROR'};
+    warnings.push(warning);log(`Aviso: ${warning.error}`);
+   });
+   network.reset('recuperação por nova sessão');
+   if(!(await resumeCurrent()))throw new Error('A interface autenticada não ficou disponível durante a recuperação.');
   };
   flush(menu);log('Menus encontrados:',menu.length);
-  async function capture(parts,kind){
-   await waitForInterface(page,{...interfaceOptions,allowForms:true});
+  const tolerateBlocked=(label,error)=>{
+   if(error?.code!=='UI_BLOCKED')throw error;
+   interfaceOptions.timeout=Math.min(interfaceOptions.timeout,5000);
+   if(blockedWarnings.has(label))return;
+   blockedWarnings.add(label);
+   const warning={label:redact(label),error:'A tela manteve um indicador de carregamento após o prazo; a captura foi preservada.',code:'UI_BLOCKED'};
+   warnings.push(warning);flush(menu);log(`Aviso em ${warning.label}: ${warning.error}`);
+  };
+  async function capture(parts,kind,targetPage=page){
    const label=parts.join(' > ');
+   await waitForInterface(targetPage,{...interfaceOptions,failureCheck:targetPage===page?interfaceOptions.failureCheck:undefined,allowForms:true}).catch(error=>tolerateBlocked(label,error));
    let bytes;
    for(let attempt=0;attempt<3&&!bytes;attempt++){
-    try{bytes=await page.screenshot({type:'jpeg',quality:84,fullPage:false,timeout:15000})}
-    catch(error){if(attempt===2)throw error;await page.waitForTimeout(350)}
+    try{bytes=await targetPage.screenshot({type:'jpeg',quality:84,fullPage:false,timeout:15000})}
+    catch(error){if(attempt===2)throw error;await targetPage.waitForTimeout(350)}
    }
    const sha=crypto.createHash('sha256').update(bytes).digest('hex');
    const duplicate=hashes.get(sha);
    const rel=path.join(...parts.slice(0,2).map(p=>slug(redact(p))),`${kind}${parts.length>2?'_'+slug(redact(parts.slice(2).join('_'))):''}_${records.length+1}.jpg`);
    if(!duplicate){const dest=path.join(out,rel);fs.mkdirSync(path.dirname(dest),{recursive:true});fs.writeFileSync(dest,bytes);hashes.set(sha,rel)}
    const metadata=[];
-   for(const frame of page.frames()){
+   for(const frame of targetPage.frames()){
     if(frame.isDetached())continue;
     metadata.push(await frame.evaluate(()=>({text:(document.querySelector('main')||document.body)?.innerText||'',heading:[...document.querySelectorAll('h1,h2')].map(e=>e.textContent),tabs:[...document.querySelectorAll('[role="tab"]')].map(e=>e.textContent),buttons:[...document.querySelectorAll('button,input[type="submit"]')].map(e=>e.textContent||e.getAttribute('aria-label')||'')})).catch(()=>({text:'',heading:[],tabs:[],buttons:[]})));
    }
@@ -88,17 +141,21 @@ async function main(options={}){
   }
   traversal=await walkMenus(page,menu,{
    maxMenus:options.maxMenus||1000,
-   open:async entry=>{const label=[...entry.parentNames||[],entry.name].join(' > ');network.reset(label);await ui.openMenu(page,entry,interfaceOptions);if(await ui.findLogin(page,{strict:true}))throw Object.assign(new Error('A sessão retornou à tela de login.'),{code:'SESSION_EXPIRED'});},
+   open:async entry=>{const label=[...entry.parentNames||[],entry.name].join(' > ');network.reset(label);await ui.openMenu(page,entry,interfaceOptions).catch(error=>tolerateBlocked(label,error));if(await ui.findLogin(page,{strict:true}))throw Object.assign(new Error('A sessão retornou à tela de login.'),{code:'SESSION_EXPIRED'});},
    recover,report,onQueue:()=>flush(menu),onWarning:message=>{warnings.push(message);log(message)},
    onRetry:entry=>{const message=redact(`Nova tentativa de navegação: ${[...entry.parentNames||[],entry.name].join(' > ')}`);notices.push({message});log(message)},
    visit:async entry=>{
     const parts=entry.parentNames?.length?[...entry.parentNames,entry.name]:[entry.name];
     await capture(parts,'geral');
-    await exploreContent(page,parts,{capture,report,interfaceOptions,onAction:label=>network.reset(label),restore:async()=>{
+    await exploreContent(page,parts,{capture,report,interfaceOptions,onAction:label=>network.reset(label),isKnownScreen:name=>menu.some(item=>item.name===name),restore:async()=>{
+     const findCurrent=async()=>(await ui.discoverMenus(page)).find(item=>item.name===entry.name&&JSON.stringify(item.parentNames)===JSON.stringify(entry.parentNames)&&JSON.stringify(item.framePath)===JSON.stringify(entry.framePath)&&(!entry.virtual||page.url().split('#')[0]===authenticatedUrl));
+     network.reset(`retorno para ${parts.join(' > ')}`);
+     let current=await findCurrent();
+     if(current||!entry.virtual){try{await ui.openMenu(page,current||entry,interfaceOptions);return}catch{}}
      await recover();
-     const current=(await ui.discoverMenus(page)).find(item=>item.name===entry.name&&JSON.stringify(item.parentNames)===JSON.stringify(entry.parentNames)&&JSON.stringify(item.framePath)===JSON.stringify(entry.framePath));
-     if(!current)throw new Error('Não foi possível retornar à tela após abrir o formulário.');
-     await ui.openMenu(page,current,interfaceOptions);
+     current=await findCurrent();
+     if(!current&&entry.virtual)throw Object.assign(new Error('Não foi possível retornar à tela após abrir o formulário.'),{code:'RESTORE_FAILED',recoverable:true});
+     try{await ui.openMenu(page,current||entry,interfaceOptions)}catch{throw Object.assign(new Error('Não foi possível retornar à tela após abrir o formulário.'),{code:'RESTORE_FAILED',recoverable:true})}
     }});
    }
   });

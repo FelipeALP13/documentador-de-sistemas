@@ -55,7 +55,8 @@ async function inspect(frame) {
       form: el.form ? selector(el.form) : null, href: el.getAttribute('href') || '',
       expanded: el.getAttribute('aria-expanded'),
       navigation: !!el.closest('nav,header,[role="navigation"],[role="menu"],[role="menubar"],[id*="menu" i],[class*="menu" i],[id*="nav" i],[class~="nav" i],[class*="navbar" i],[class*="navigation" i]'),
-      primaryNavigation: !!el.closest('nav,header,aside,[role="navigation"],[id*="nav" i],[class~="nav" i],[class*="navbar" i],[class*="navigation" i],[class*="sidebar" i]'),
+      primaryNavigation: !!el.closest('nav,header,aside,[role="navigation"],[id*="nav" i],[class~="nav" i],[class*="navbar" i],[class*="navigation" i],[class*="sidebar" i]')
+        && !el.closest('main,[role="main"],#content,#conteudo,.content'),
       editorControl: !!el.closest('.tox,.tox-tinymce,.mce-container,.mce-tinymce,.cke,.ck-editor,[role="toolbar"],[contenteditable="true"]'),
       contentNavigation: !!el.closest('main,[role="main"],#content,#conteudo,.content')
         && !el.closest('form,table,[role="dialog"],[role="alertdialog"],.modal,.dropdown-menu,.pagination,.tox,.mce-container,.cke,.ck-editor'),
@@ -120,6 +121,7 @@ async function discoverMenus(page) {
     for (const item of items) {
       const name = (item.text || item.aria).replace(/\s+/g, ' ').trim();
       if (!name || name.length > 100 || item.disabled || item.editorControl || unsafe.test(normalize(`${name} ${item.href} ${item.id}`))) continue;
+      if (/^\d+$/.test(name)) continue;
       if (/^(nov[oa]|adicionar|cadastrar|incluir|criar)(?:\s|$)/i.test(normalize(name))) continue;
       if (item.role === 'tab') continue;
       if (!['a', 'button'].includes(item.tag) && item.role !== 'link' && !item.navigation) continue;
@@ -227,18 +229,26 @@ async function activateLoginControl(control, isButton = true) {
 }
 
 async function openMenu(page, entry, options = {}) {
-  await waitForInterface(page, options);
+  await waitForInterface(page, options).catch(error=>{if(!(options.allowBlocked&&error.code==='UI_BLOCKED'))throw error});
   if (entry.virtual) return;
   const frame = resolveFrame(page, entry.framePath);
   if (!frame) throw new Error('Frame do menu indisponível.');
-  const target = frame.locator(entry.selector);
+  const visibleControl=async(selector,name)=>{
+    const stored=frame.locator(selector);
+    if(await stored.count().catch(()=>0)===1&&await stored.isVisible().catch(()=>false))return stored;
+    const escaped=String(name||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    const semantic=frame.locator('button:visible,a:visible,[role="menuitem"]:visible,[role="link"]:visible').filter({hasText:new RegExp(`^\\s*${escaped}\\s*$`,'i')});
+    return await semantic.count().catch(()=>0)?semantic.first():stored.first();
+  };
+  let target = await visibleControl(entry.selector,entry.name);
   for (const [index, selector] of entry.parents.entries()) {
-    const parent = frame.locator(selector);
-    const next = frame.locator(entry.parents[index + 1] || entry.selector);
+    const parent = await visibleControl(selector,entry.parentNames?.[index]);
+    const nextName=entry.parentNames?.[index+1]||entry.name;
+    let next = await visibleControl(entry.parents[index + 1] || entry.selector,nextName);
     // Inspect the next level, not the final leaf: clicking an already open root
     // would close the entire branch while a deeper submenu is still collapsed.
     if (!(await next.isVisible())) {
-      const name = await parent.innerText();
+      const name = await parent.innerText({timeout:15000}).catch(()=>entry.parentNames?.[index]||'');
       if (unsafe.test(normalize(name))) throw new Error('Ação de menu ignorada por alterar dados ou encerrar sessão.');
       try {
         // Background browser windows can throttle the animation frames used by
@@ -250,7 +260,8 @@ async function openMenu(page, entry, options = {}) {
           await next.waitFor({ state: 'visible', timeout: 700 }).catch(() => {});
         }
         if (!(await next.isVisible())) await activateMenuControl(parent);
-        await next.waitFor({ state: 'visible', timeout: 4000 });
+        next=await visibleControl(entry.parents[index + 1] || entry.selector,nextName);
+        await next.waitFor({ state: 'visible', timeout: 15000 });
       } catch (error) {
         error.code = 'MENU_HIDDEN';
         error.action = { phase: 'expandir submenu', parentSelector: selector, nextSelector: entry.parents[index + 1] || entry.selector };
@@ -258,12 +269,13 @@ async function openMenu(page, entry, options = {}) {
       }
     }
   }
+  target=await visibleControl(entry.selector,entry.name);
   await activateMenuControl(target);
   await waitForInterface(page, options);
 }
 
 async function activateMenuControl(control) {
-  await control.waitFor({ state: 'visible', timeout: 4000 });
+  await control.waitFor({ state: 'visible', timeout: 10000 });
   const native = await control.evaluate(el => {
     if (el.matches('a[href][target="_blank"]')) el.setAttribute('target', '_self');
     return el.matches('a[href],button,input[type="button"],[role="link"]');
@@ -273,7 +285,7 @@ async function activateMenuControl(control) {
     // Some SPAs bind pointer activation and keyboard activation differently.
     // Playwright's native click waits for visibility, stability and hit testing
     // while preserving the same behavior a user gets from the menu.
-    await control.click({ timeout: 5000 });
+    await control.click({ timeout: 15000 });
   } catch {
     const error = new Error('O item do menu está oculto, desabilitado ou coberto por outro elemento.');
     error.code = 'MENU_BLOCKED';

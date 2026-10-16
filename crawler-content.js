@@ -76,29 +76,90 @@ async function activate(page, descriptor) {
   await ui.activateMenuControl(locator);
 }
 
-async function exploreContent(page, parts, { capture, report, restore, interfaceOptions = {}, onAction = () => {} }) {
-  const wait = () => waitForInterface(page, { ...interfaceOptions, allowForms: true });
+async function openLinkedPage(page, descriptor) {
+  const found = (await controls(page, descriptor.kind)).find(item => normalize(item.name) === normalize(descriptor.name)
+    && item.occurrence === descriptor.occurrence && JSON.stringify(item.framePath) === JSON.stringify(descriptor.framePath));
+  if (!found || !found.href || /^(#|javascript:|mailto:|tel:)/i.test(found.href)) return null;
+  const frame = ui.resolveFrame(page, found.framePath);
+  const url = new URL(found.href, frame.url()).href;
+  const linked = await page.context().newPage();
+  linked.setDefaultTimeout(5000);
+  linked.on('dialog', dialog => dialog.dismiss().catch(() => {}));
+  try {
+    const response = await linked.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    if (response && response.status() >= 400) throw Object.assign(new Error(`O servidor retornou HTTP ${response.status()} ao abrir ${url}.`), { code: `HTTP_${response.status()}` });
+    return linked;
+  } catch (error) {
+    await linked.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function activateForm(page, descriptor) {
+  const linked = await openLinkedPage(page, descriptor);
+  if (linked) return linked;
+  let navigation = null;
+  let popup = null;
+  const context = page.context();
+  const onPage = candidate => { if (candidate !== page) popup = candidate; };
+  const intercept = async route => {
+    const request = route.request();
+    if (request.isNavigationRequest() && request.url().split('#')[0] !== page.url().split('#')[0]) {
+      navigation = { url: request.url(), method: request.method().toUpperCase() };
+      return route.abort();
+    }
+    return route.fallback();
+  };
+  context.on('page', onPage);
+  await page.route('**/*', intercept);
+  try {
+    await activate(page, descriptor).catch(error => { if (!navigation) throw error; });
+    for(let attempt=0;attempt<15&&!navigation&&!popup;attempt++)await page.waitForTimeout(100);
+  } finally {
+    await page.unroute('**/*', intercept);
+    context.off('page', onPage);
+  }
+  if (popup) { await popup.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {}); return popup; }
+  if (!navigation) return page;
+  if (navigation.method !== 'GET') throw Object.assign(new Error('A tela nova exige o reenvio de dados; a navegação foi bloqueada pelo modo somente leitura.'), { code: 'FORM_NAVIGATION_BLOCKED', recoverable: true });
+  const isolated = await page.context().newPage();
+  isolated.setDefaultTimeout(5000);
+  isolated.on('dialog', dialog => dialog.dismiss().catch(() => {}));
+  try {
+    const response = await isolated.goto(navigation.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    if (response && response.status() >= 400) throw Object.assign(new Error(`O servidor retornou HTTP ${response.status()} ao abrir ${navigation.url}.`), { code: `HTTP_${response.status()}` });
+    return isolated;
+  } catch (error) {
+    await isolated.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function exploreContent(page, parts, { capture, report, restore, interfaceOptions = {}, onAction = () => {}, isKnownScreen = () => false }) {
+  const waitOn = target => waitForInterface(target, { ...interfaceOptions, failureCheck:target===page?interfaceOptions.failureCheck:undefined, allowForms: true })
+    .catch(error=>{if(!(interfaceOptions.allowBlocked&&error.code==='UI_BLOCKED'))throw error});
+  const wait = () => waitOn(page);
   const restoreRoute = async route => {
     await restore();
     const restored = [];
     for (const tab of route) { restored.push(tab.name); onAction(restored.join(' > ')); await activate(page, tab); await wait(); }
   };
   // Read every visible tab, including JSP/Bootstrap tabs without role="tab".
-  async function tabs(labels, route, ancestors = new Set(), depth = 0, allowNew = true) {
-    const items = await controls(page, 'tab');
+  async function tabs(labels, route, ancestors = new Set(), depth = 0, allowNew = true, currentPage = page) {
+    const items = await controls(currentPage, 'tab');
     const key = item => JSON.stringify([item.framePath, normalize(item.name), item.occurrence]);
     const siblings = new Set([...ancestors, ...items.map(key)]);
     for (const tab of items) {
       if (ancestors.has(key(tab))) continue;
       try {
         onAction([...labels, tab.name].join(' > '));
-        await activate(page, tab);
-        await wait();
-        await capture([...labels, tab.name], 'aba');
+        await activate(currentPage, tab);
+        await waitOn(currentPage);
+        await capture([...labels, tab.name], 'aba', currentPage);
         const nextRoute = [...route, tab];
         if (allowNew) await forms([...labels, tab.name], nextRoute);
-        if (depth < 3) await tabs([...labels, tab.name], nextRoute, siblings, depth + 1, allowNew);
-        else if ((await controls(page, 'tab')).some(item => !siblings.has(key(item)))) throw new Error('Há abas adicionais além do limite de profundidade; cobertura incompleta.');
+        if (depth < 3) await tabs([...labels, tab.name], nextRoute, siblings, depth + 1, allowNew, currentPage);
+        else if ((await controls(currentPage, 'tab')).some(item => !siblings.has(key(item)))) throw new Error('Há abas adicionais além do limite de profundidade; cobertura incompleta.');
       } catch (error) {
         if (!allowNew) throw error;
         await report([...labels, tab.name].join(' > '), error);
@@ -109,27 +170,31 @@ async function exploreContent(page, parts, { capture, report, restore, interface
   async function forms(labels, route) {
     const openers = await controls(page, 'new');
     for (const opener of openers) {
+      let formPage=page;
       try {
         const before = await signature(page);
         onAction([...labels, opener.name].join(' > '));
-        await activate(page, opener);
-        await wait();
+        formPage=await activateForm(page,opener);
+        await waitOn(formPage);
         const deadline = Date.now() + 5000;
-        while ((await signature(page)) === before) {
+        while ((await signature(formPage)) === before) {
           if (Date.now() >= deadline) throw Object.assign(new Error('O botão foi acionado, mas nenhum formulário ou tela nova foi aberto.'), { code: 'FORM_NOT_OPENED' });
-          await page.waitForTimeout(150);
-          await wait();
+          await formPage.waitForTimeout(150);
+          await waitOn(formPage);
         }
-        await capture([...labels, opener.name], 'novo');
-        await tabs([...labels, opener.name], [], new Set(), 0, false);
+        await capture([...labels, opener.name], 'novo', formPage);
+        await tabs([...labels, opener.name], [], new Set(), 0, false, formPage);
       } catch (error) { await report([...labels, opener.name].join(' > '), error); }
       // Reload the original list in the same session instead of submitting or
       // relying on Escape, which many JSP forms do not handle.
-      finally { await restoreRoute(route); }
+      finally {
+        if(formPage!==page)await formPage.close().catch(()=>{});
+        else await restoreRoute(route);
+      }
     }
   }
   async function screens(labels, route, visited = new Set(), depth = 0) {
-    const items = await controls(page, 'screen');
+    const items = (await controls(page, 'screen')).filter(item=>!isKnownScreen(item.name));
     for (const screen of items) {
       const key = JSON.stringify([screen.framePath, normalize(screen.name), screen.href]);
       if (visited.has(key)) continue;

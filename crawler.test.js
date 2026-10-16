@@ -469,6 +469,25 @@ test('submenus profundos preservam ancestrais abertos e permitem visitar irmãos
   assert.equal(await page.locator('main').innerText(), 'Consulta');
 });
 
+test('menu JSP oculto é acionado com segurança quando o dropdown não reabre', async () => {
+  const page = await newPage();
+  await page.setContent(`<nav><ul><li><a href="#" onclick="this.nextElementSibling.hidden=false">Configuração</a><ul hidden><li><a href="#" onclick="this.nextElementSibling.hidden=false">Agendador</a><ul hidden><li><a href="#" onclick="void 0">FI</a><ul hidden><li><a href="javascript:window.openScreen('Atual')">Mensalidade Atual</a></li><li><a href="javascript:window.openScreen('Vencida')">Mensalidade Vencida</a></li></ul></li></ul></li></ul></li></ul></nav><main>Inicial</main><script>window.openScreen=name=>{document.querySelector('main').textContent=name;document.querySelectorAll('nav ul ul').forEach(list=>list.hidden=true)}</script>`);
+  const entries = await ui.discoverMenus(page);
+  await ui.openMenu(page, entries.find(entry => entry.name === 'Mensalidade Atual'));
+  assert.equal(await page.locator('main').innerText(), 'Atual');
+  await ui.openMenu(page, entries.find(entry => entry.name === 'Mensalidade Vencida'));
+  assert.equal(await page.locator('main').innerText(), 'Vencida');
+});
+
+test('link JavaScript salvo abre tela quando o JSP remove o item do menu', async () => {
+  const page = await newPage();
+  await page.setContent(`<nav><ul><li><a href="#" onclick="this.nextElementSibling.hidden=false">Administrativo</a><ul hidden><li><a href="javascript:window.openScreen('Inconsistência')">Assistência 24h (Inconsistência)</a></li></ul></li></ul></nav><main>Inicial</main><script>window.openScreen=name=>document.querySelector('main').textContent=name</script>`);
+  const entry = (await ui.discoverMenus(page)).find(item => item.name === 'Assistência 24h (Inconsistência)');
+  await page.locator(entry.selector).evaluate(element => element.remove());
+  await ui.openMenu(page, entry);
+  assert.equal(await page.locator('main').innerText(), 'Inconsistência');
+});
+
 test('menu aberto por hover permite navegar sem fechar a lista', async () => {
   const page = await newPage();
   await page.setContent(`<style>li>ul{display:none}li:hover>ul{display:block}</style><nav><ul><li><a href="#">Consultas</a><ul><li><a href="#" onclick="document.querySelector('main').textContent='Clientes'">Clientes</a></li></ul></li></ul></nav><main>Inicial</main>`);
@@ -487,11 +506,11 @@ test('menus TinyMCE e ferramentas não viram módulos nem pais de botões irmão
 });
 
 test('fila reencontra menu após mudança de seletor e preserva nomes repetidos em outros módulos', async () => {
-  const initial = ['FI', 'Administrativo'].map((parent, index) => ({ ...menuEntries(1)[0], name: 'Consulta', parentNames: [parent], selector: `#old${index}` }));
-  const updated = initial.map((entry, index) => ({ ...entry, selector: `#new${index}` }));
+  const initial = ['FI', 'Administrativo'].map((parent, index) => ({ ...menuEntries(1)[0], name: 'Consulta', parentNames: [parent], parents: [`#old-parent${index}`], selector: `#old${index}` }));
+  const updated = initial.map((entry, index) => ({ ...entry, parents: [`#new-parent${index}`], selector: `#new${index}` }));
   const visited = [];
   const result = await walkMenus(null, [...initial], {
-    discover: async () => updated, open: async e => assert.ok(e.selector.startsWith('#new')),
+    discover: async () => updated, open: async e => { assert.ok(e.selector.startsWith('#new')); assert.ok(e.parents[0].startsWith('#new-parent')); },
     visit: async e => visited.push(e.parentNames[0]), recover: async () => assert.fail(), report: async () => assert.fail(),
   });
   assert.equal(result.complete, true);

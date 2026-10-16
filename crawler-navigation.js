@@ -6,6 +6,12 @@ const nameKey = entry => JSON.stringify([entry.framePath, entry.name]);
 const findCurrent = (entries, entry) => entries.find(candidate => key(candidate) === key(entry))
   || entries.find(candidate => semanticKey(candidate) === semanticKey(entry))
   || entries.find(candidate => JSON.stringify(candidate.framePath) === JSON.stringify(entry.framePath) && candidate.name === entry.name);
+const refreshEntry = (found, entry) => {
+  if (!found) return entry;
+  const hasDiscoveredPath = found.parentNames?.length
+    && JSON.stringify(found.parentNames) === JSON.stringify(entry.parentNames || []);
+  return hasDiscoveredPath ? found : { ...found, parents: entry.parents, parentNames: entry.parentNames };
+};
 const overviewOnly = entry => /^terceiros?$/i.test(String(entry.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
 
 async function walkMenus(page, queue, {
@@ -24,7 +30,7 @@ async function walkMenus(page, queue, {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           const found=findCurrent(await discover(),entry);
-          current=found&&entry.parentNames?.length?{...found,parents:entry.parents,parentNames:entry.parentNames}:found||entry;
+          current=refreshEntry(found,entry);
           await open(current);
           break;
         } catch (error) {

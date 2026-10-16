@@ -241,6 +241,30 @@ async function openMenu(page, entry, options = {}) {
     return await semantic.count().catch(()=>0)?semantic.first():stored.first();
   };
   let target = await visibleControl(entry.selector,entry.name);
+  const activateStoredTarget=async()=>{
+    const description=normalize(`${entry.name} ${entry.href} ${entry.id}`);
+    if(unsafe.test(description))return false;
+    const stored=frame.locator(entry.selector).first();
+    if(await stored.count().catch(()=>0)){
+      const activated=await stored.evaluate(element=>{
+        if(element.disabled||element.getAttribute('aria-disabled')==='true')return false;
+        if(!element.matches('a,button,[role="link"],[role="menuitem"]'))return false;
+        element.click();
+        return true;
+      }).catch(()=>false);
+      if(activated)return true;
+    }
+    const href=String(entry.href||'').trim();
+    if(!/^javascript:/i.test(href)||/^javascript:\s*(?:void\s*\(\s*0\s*\)|;?)\s*$/i.test(href))return false;
+    return frame.evaluate(value=>{
+      const source=value.replace(/^javascript:\s*/i,'');
+      const link=document.createElement('a');
+      link.setAttribute('href',`javascript:void function(){${source}\n}.call(window)`);
+      link.hidden=true;
+      document.body.append(link);
+      try{link.click();return true}finally{link.remove()}
+    },href).catch(()=>false);
+  };
   for (const [index, selector] of entry.parents.entries()) {
     const parent = await visibleControl(selector,entry.parentNames?.[index]);
     const nextName=entry.parentNames?.[index+1]||entry.name;
@@ -261,8 +285,12 @@ async function openMenu(page, entry, options = {}) {
         }
         if (!(await next.isVisible())) await activateMenuControl(parent);
         next=await visibleControl(entry.parents[index + 1] || entry.selector,nextName);
-        await next.waitFor({ state: 'visible', timeout: 15000 });
+        await next.waitFor({ state: 'visible', timeout: 5000 });
       } catch (error) {
+        if(await activateStoredTarget()){
+          await waitForInterface(page,options);
+          return;
+        }
         error.code = 'MENU_HIDDEN';
         error.action = { phase: 'expandir submenu', parentSelector: selector, nextSelector: entry.parents[index + 1] || entry.selector };
         throw error;
@@ -270,7 +298,8 @@ async function openMenu(page, entry, options = {}) {
     }
   }
   target=await visibleControl(entry.selector,entry.name);
-  await activateMenuControl(target);
+  try{await activateMenuControl(target)}
+  catch(error){if(!(await activateStoredTarget()))throw error}
   await waitForInterface(page, options);
 }
 

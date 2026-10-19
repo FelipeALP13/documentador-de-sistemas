@@ -12,7 +12,7 @@ const { walkMenus } = require('./crawler-navigation');
 const { exploreContent, controls: contentControls } = require('./crawler-content');
 const { attachNetworkMonitor } = require('./crawler-network');
 
-let server, base, browser, expireRequests = 0, spaLoginRequests = 0, spaFormLoginRequests = 0;
+let server, base, browser, expireRequests = 0, spaLoginRequests = 0, spaFormLoginRequests = 0, opaqueWrites = 0;
 const requests = [];
 const modern = `<form action="/modern-home"><input type="search" placeholder="Pesquisar"><input id="email" autocomplete="username"><input id="senha" type="password"><button type="submit">Entrar</button></form>`;
 const legacy = `<title>Sistema legado</title><form id="frmLogin" action="/frames"><label for="usuario">Usuário</label><input id="usuario" name="usuario_login"><input id="senha" name="senha_login" type="password"><input type="submit" value="Entrar"></form>`;
@@ -22,6 +22,7 @@ before(async () => {
     requests.push(route);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     if (route === '/missing.jsp') { res.statusCode = 404; res.end('Not found'); return; }
+    if (route === '/opaque-write') { opaqueWrites++; res.end('alterado'); return; }
     if (route === '/reauth-home') {
       if (req.method === 'POST') res.end(`<nav><a href="/expire-once">Relatório protegido</a></nav><main>Sessão ativa</main>`);
       else res.end(`<form action="/reauth-home" method="post"><input name="usuario_login"><input type="password" name="senha_login"><button type="submit">Entrar</button></form>`);
@@ -69,6 +70,7 @@ before(async () => {
       '/rejected-message': `<title>Acesso negado</title><form><input name="login"><input type="password"><button type="submit">Entrar</button></form><script>document.querySelector('form').onsubmit=event=>{event.preventDefault();const container=document.createElement('div');container.id='dialogContainer';const dialog=document.createElement('div');dialog.className='dialog dialog-error';dialog.textContent='Usuário ou senha inválidos.';const close=document.createElement('button');close.id='dialog-close-button';close.type='submit';close.textContent='Fechar';dialog.append(close);container.append(dialog);document.body.append(container)}</script>`,
       '/unusual': `<form action="/modern-home"><input placeholder="Matrícula"><input type="password"><input type="image" alt="Acessar" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></form>`,
       '/animated-login': `<style>.entering{transform:translateX(200vw);pointer-events:none}</style><form class="entering" action="/modern-home"><input id="animated-user" autocomplete="username"><input id="animated-password" type="password"><button type="submit">Entrar</button></form><script>setTimeout(()=>document.querySelector('form').classList.remove('entering'),650)</script>`,
+      '/covered-login': `<form action="/modern-home"><input autocomplete="username"><input type="password"><button type="submit">Entrar</button></form><div style="position:fixed;inset:0;z-index:10"></div>`,
       '/delayed-menu-login': modern.replace('/modern-home','/delayed-menu-home'),
       '/delayed-menu-home': `<main>Carregando módulos</main><script>setTimeout(()=>{const nav=document.createElement('nav');const link=document.createElement('a');link.href='#';link.textContent='Módulo tardio';link.onclick=()=>document.querySelector('main').textContent='Módulo carregado';nav.append(link);document.body.prepend(nav)},2200)</script>`,
       '/alert-login': modern.replace('/modern-home','/alert-home'),
@@ -94,6 +96,9 @@ before(async () => {
       '/http-login': modern.replace('/modern-home','/http-home'),
       '/http-home': `<nav><a href="#" onclick="document.body.insertAdjacentHTML('beforeend','<div class=blockOverlay style=position:fixed;inset:0></div>');fetch('/missing.jsp?token=nao-registrar')">Solicitado</a><a href="/http-good">Consulta</a></nav><main>Início</main>`,
       '/http-good': `<main>Consulta disponível</main>`,
+      '/mutation-login': modern.replace('/modern-home','/mutation-home'),
+      '/mutation-home': `<nav><a href="#" onclick="fetch('/opaque-write',{method:'POST',body:'registro=1'}).catch(()=>{});document.querySelector('main').textContent='Consulta aberta'">Consulta</a></nav><main>Início</main>`,
+      '/frame-menu': `<nav><a href="/clientes.jsp">Clientes do frame</a></nav>`,
       '/blocked-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Consulta inicial'">Consulta</a><a href="#" onclick="document.body.insertAdjacentHTML('beforeend', '<div role=dialog style=position:fixed;inset:0;background:white;z-index:99>Deseja excluir o cadastro?<button onclick=window.confirmed=true>OK</button></div>')">Operacional</a><a href="#" onclick="document.querySelector('main').textContent='Próxima tela'">FI</a></nav><main>Início</main>`,
     };
     res.end(pages[route] || '<title>Sem login</title><h1>Página sem formulário</h1>');
@@ -158,6 +163,25 @@ test('login aguarda formulário animado ficar realmente acionável', async () =>
     assert.equal((await ui.findLogin(page)).button.selector, 'button[type="submit"]');
     const menus = await ui.login(page, credentials('/animated-login'), 4000);
     assert.ok(menus.some(entry => entry.name === 'Visão geral'));
+  } finally { await page.close(); }
+});
+
+test('login usa o caminho de teclado quando o botão está coberto', async () => {
+  const page = await newPage();
+  try {
+    await page.goto(base + '/covered-login');
+    const menus = await ui.login(page, credentials('/covered-login'), 5000);
+    assert.ok(menus.some(entry => entry.name === 'Visão geral'));
+  } finally { await page.close(); }
+});
+
+test('menu em iframe de outra origem usa a origem do próprio frame', async () => {
+  const page = await newPage();
+  try {
+    await page.setContent(`<iframe src="${base}/frame-menu"></iframe>`);
+    await page.locator('iframe').contentFrame().locator('nav').waitFor();
+    const menus = await ui.discoverMenus(page);
+    assert.ok(menus.some(entry => entry.name === 'Clientes do frame' && entry.framePath.length === 1));
   } finally { await page.close(); }
 });
 
@@ -518,6 +542,21 @@ test('fila reencontra menu após mudança de seletor e preserva nomes repetidos 
   assert.deepEqual(visited, ['FI', 'Administrativo']);
 });
 
+test('descoberta de submenus não depende do nome do módulo', async () => {
+  const root = { name: 'Terceiros', selector: '#root', href: '#', framePath: [], parents: [], parentNames: [] };
+  const child = { name: 'Operadoras', selector: '#child', href: '#', framePath: [], parents: [], parentNames: [] };
+  let expanded = false;
+  const queue = [root];
+  const result = await walkMenus(null, queue, {
+    discover: async () => expanded ? [root, child] : [root],
+    open: async entry => { if (entry.name === root.name) expanded = true; },
+    visit: async () => {}, recover: async () => {}, report: async () => ({ recoverable: false }),
+  });
+  assert.equal(result.failures, 0);
+  assert.deepEqual(queue.map(entry => entry.name), ['Terceiros', 'Operadoras']);
+  assert.deepEqual(queue[1].parentNames, ['Terceiros']);
+});
+
 test('página virtual de uma rota final não entra novamente na fila de menus', async () => {
   const entry = menuEntries(1)[0];
   const virtual = { ...entry, name: 'Página inicial', selector: 'body', virtual: true };
@@ -626,6 +665,17 @@ test('404 real vira aviso com diagnóstico sem query e não impede as próximas 
   assert.equal(diagnostic.network[0].status, 404);
   assert.ok(!JSON.stringify(diagnostic).includes('nao-registrar'));
   assert.match(warning.error, /HTTP 404/);
+});
+
+test('modo somente leitura bloqueia POST mesmo quando a URL não revela a escrita', async () => {
+  opaqueWrites = 0;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-readonly-'));
+  const result = await scan({ credentials: credentials('/mutation-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000 });
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.equal(opaqueWrites, 0);
+  assert.equal(result.errors, 0);
+  assert.ok(manifest.records.some(record => record.text.includes('Consulta aberta')));
+  assert.ok(manifest.notices.some(item => item.message.includes('modo somente leitura')));
 });
 
 test('monitor ignora credenciais de login e descarta erros da ação anterior', async () => {

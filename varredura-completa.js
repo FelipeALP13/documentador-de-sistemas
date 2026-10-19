@@ -30,15 +30,15 @@ async function main(options={}){
   const request=route.request(),method=request.method().toUpperCase();
   if(!readOnly&&request.isNavigationRequest()&&method==='POST')authNavigation={method,url:request.url()};
   const description=`${request.url()} ${request.postData()||''}`;
-  const unsafeMutation=/(?:^|[\/_?&=.-])(delete|remove|destroy|save|update|create|submit|approve|reject|publish|payment|pay|cancel|logout|signout)(?:$|[\/_?&=.-])/i.test(description);
-  const destructiveNavigation=/(?:^|[\/_?&=.-])(delete|remove|destroy|approve|reject|publish|payment|pay|cancel|logout|signout)(?:$|[\/_?&=.-])/i.test(request.url());
+  const destructiveNavigation=/(?:^|[\/_?&=.-])(delete|remove|destroy|save|update|submit|approve|reject|publish|payment|pay|cancel|confirm|finalize|logout|signout|excluir|remover|salvar|gravar|atualizar|enviar|submeter|aprovar|reprovar|publicar|pagar|cancelar|confirmar|finalizar|encerrar|sair)(?:$|[\/_?&=.-])/i.test(description);
   const authReplay=allowAuthReplay&&authNavigation&&method===authNavigation.method&&request.url()===authNavigation.url;
-  const blocked=['PUT','PATCH','DELETE'].includes(method)||(readOnly&&((method==='POST'&&request.isNavigationRequest()&&!authReplay)||(method!=='GET'&&method!=='HEAD'&&unsafeMutation&&!authReplay)||(method==='GET'&&destructiveNavigation)));
-  if(blocked){notices.push({message:'Uma tentativa de alteração foi bloqueada pelo modo somente leitura.'});return settle(route.abort())}
+  const mutationMethod=!['GET','HEAD','OPTIONS'].includes(method);
+  const blocked=['PUT','PATCH','DELETE'].includes(method)||(readOnly&&!authReplay&&(mutationMethod||(method==='GET'&&destructiveNavigation)));
+  if(blocked){notices.push({message:'Uma tentativa de alteração foi bloqueada pelo modo somente leitura.'});return settle(route.abort('aborted'))}
   return settle(route.continue());
  };
  const createContextPage=async()=>{
-  context=await browser.newContext({viewport:{width:1280,height:900},deviceScaleFactor:1});
+  context=await browser.newContext({viewport:{width:1280,height:900},deviceScaleFactor:1,serviceWorkers:'block'});
   await context.route('**/*',handleRequest);
   page=await context.newPage();page.setDefaultTimeout(5000);
   page.on('dialog',dialog=>dialog.dismiss().catch(()=>{}));

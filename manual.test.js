@@ -70,8 +70,8 @@ test('retoma, invalida imagem alterada e preserva progresso após falha', async 
     try {
         const run = path.join(root, 'artifacts', '2026-10-06T13-34-23-690Z');
         fs.mkdirSync(path.join(run, 'Modulo'), { recursive: true });
-        fs.writeFileSync(path.join(run, 'Modulo', '1.jpg'), 'fake-jpeg');
-        fs.writeFileSync(path.join(run, 'Modulo', '2.png'), 'fake-png');
+        fs.writeFileSync(path.join(run, 'Modulo', '1.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+        fs.writeFileSync(path.join(run, 'Modulo', '2.png'), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]));
         fs.writeFileSync(path.join(run, 'MANUAL_FINAL.md'), 'manual anterior');
         let calls = 0, fail = false, catalogCalls = 0;
         const fakeClient = { ...client,
@@ -103,8 +103,17 @@ test('retoma, invalida imagem alterada e preserva progresso após falha', async 
         await main([]);
         assert.equal(calls, 3);
         assert.equal(catalogCalls, 3);
-        fs.writeFileSync(path.join(run, 'Modulo', '1.jpg'), 'imagem alterada');
+        fs.writeFileSync(path.join(run, 'Modulo', '1.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0xd9, 1]));
         await main([]);
         assert.equal(calls, 4);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('conferência rejeita imagem corrompida antes de chamar o serviço', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-invalid-image-'));
+    try {
+        const file = path.join(root, 'captura.jpg');
+        fs.writeFileSync(file, 'conteúdo inválido');
+        assert.throws(() => writer.imageInfo(file, root), /Imagem inválida ou corrompida: captura\.jpg/);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

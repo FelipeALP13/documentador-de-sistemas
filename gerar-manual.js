@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { readConfig, safeMessage, withRetry, createModel, responseText, sleep } = require('./gemini-client');
 
 const PROMPT_VERSION = 1;
+const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 
 function obterTodasAsImagens(directory) {
     return fs.readdirSync(directory, { withFileTypes: true })
@@ -19,8 +20,16 @@ function mimeType(file) {
 
 function imageInfo(file, run) {
     const data = fs.readFileSync(file);
+    const relative = path.relative(run, file).split(path.sep).join('/');
+    const extension = path.extname(file).toLowerCase();
+    const jpeg = data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+    const png = data.length >= 8 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    if (!data.length || data.length > MAX_IMAGE_BYTES) throw new Error(`Imagem vazia ou maior que 6 MB: ${relative}.`);
+    if ((extension === '.png' && !png) || (/^\.jpe?g$/.test(extension) && !jpeg)) {
+        throw new Error(`Imagem inválida ou corrompida: ${relative}.`);
+    }
     return {
-        file, relative: path.relative(run, file).split(path.sep).join('/'),
+        file, relative,
         hash: crypto.createHash('sha256').update(data).digest('hex'),
     };
 }
@@ -73,8 +82,8 @@ async function main(args = process.argv.slice(2), options = {}) {
     if (!images.length) throw new Error(`Nenhuma imagem encontrada em ${run}.`);
     log(`Execução: ${runs[0]} | ${images.length} imagens.`);
     if (args.includes('--dry-run')) {
-        log('Validação local concluída. Nenhuma chamada à API ou escrita de manual.');
-        return;
+        log('Validação local concluída. Nenhuma chamada à API ou escrita de manual. Para gerar, informe o serviço e o código de acesso e clique em Gerar ou retomar manual.');
+        return { run: runs[0], images: images.length, complete: true };
     }
     const config = options.config || readConfig();
     const checkpointFile = path.join(run, 'manual-progresso.json');
@@ -105,7 +114,7 @@ async function main(args = process.argv.slice(2), options = {}) {
             }
             atomicWrite(outputFile, renderManual(images, entries, config.model));
         }
-        if (!pending.length) { saveManual(); log(`Manual completo: ${outputFile}`); return; }
+        if (!pending.length) { saveManual(); log(`Manual completo: ${outputFile}`); return { run: runs[0], images: images.length, outputFile, complete: true }; }
         const model = options.generateImage ? null : options.model || await createModel(config);
         let completed = images.length - pending.length;
         for (const [index, info] of pending.slice(0, limit).entries()) {
@@ -131,6 +140,7 @@ async function main(args = process.argv.slice(2), options = {}) {
             }
         }
         log(`${completed === images.length ? 'Manual completo' : `Manual parcial (${completed}/${images.length})`}: ${outputFile}`);
+        return { run: runs[0], images: images.length, outputFile, complete: completed === images.length };
     } finally {
         fs.closeSync(lock);
         fs.unlinkSync(lockFile);

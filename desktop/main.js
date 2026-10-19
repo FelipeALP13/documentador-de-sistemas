@@ -96,8 +96,7 @@ app.whenReady().then(() => {
   }, [input?.user, input?.password, input?.accessCode]));
 
   ipcMain.handle('check-images', async (_event, input) => runExclusive(async () => {
-    await generate(['--dry-run'], { artifactsRoot: artifactsRoot(input?.folder), log: sendLog });
-    return true;
+    return generate(['--dry-run'], { artifactsRoot: artifactsRoot(input?.folder), log: sendLog });
   }));
 
   ipcMain.handle('generate', async (_event, input) => runExclusive(async () => {

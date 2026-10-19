@@ -4,7 +4,7 @@ Aplicativo pessoal para mapear sistemas web e gerar documentação a partir das 
 
 ## Modo somente leitura
 
-A varredura abre telas e formulários **Novo/Nova, Adicionar, Cadastrar e Incluir**, mas não preenche campos nem aciona controles de salvar, excluir, enviar, publicar, aprovar, pagar ou confirmar. Requisições `PUT`, `PATCH` e `DELETE`, submissões `POST` de navegação e endereços com ações destrutivas são bloqueados depois do login.
+A varredura abre telas e formulários **Novo/Nova, Adicionar, Cadastrar e Incluir**, mas não preenche campos nem aciona controles de salvar, excluir, enviar, publicar, aprovar, pagar ou confirmar. Depois do login, qualquer requisição com método de escrita é bloqueada. Endereços `GET` que indicam ações destrutivas também são bloqueados, e service workers ficam desativados durante a varredura para que não contornem essa proteção.
 
 ## Compatibilidade
 
@@ -36,6 +36,8 @@ npm run desktop:build
 ```
 
 O arquivo é criado em `dist/Documentador-de-Sistemas-<versão>-portable.exe`.
+
+O botão **Conferir imagens** valida localmente o formato e o limite de 6 MB de cada captura da execução mais recente. Ele não chama o Gemini nem escreve o manual. Depois da conferência, informe o endereço do proxy e o código de acesso e use **Gerar ou retomar manual**.
 
 ## Proxy Gemini
 

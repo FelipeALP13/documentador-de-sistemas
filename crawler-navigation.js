@@ -12,8 +12,6 @@ const refreshEntry = (found, entry) => {
     && JSON.stringify(found.parentNames) === JSON.stringify(entry.parentNames || []);
   return hasDiscoveredPath ? found : { ...found, parents: entry.parents, parentNames: entry.parentNames };
 };
-const overviewOnly = entry => /^terceiros?$/i.test(String(entry.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
-
 async function walkMenus(page, queue, {
   maxMenus = 1000, maxConsecutiveErrors = 3, discover = () => ui.discoverMenus(page),
   open = entry => ui.openMenu(page, entry), visit, recover, report, onQueue = () => {}, onWarning = () => {}, onRetry = () => {},
@@ -58,10 +56,9 @@ async function walkMenus(page, queue, {
         // A virtual start page is only an initial fallback for systems without
         // navigation. It must not become a queued menu after opening a leaf URL.
         if (next.virtual) continue;
-        // Root controls that appear only inside an opened screen are local
-        // actions/cards, not new application modules. Real lazy submenus carry
-        // their parent chain and remain eligible for the traversal queue.
-        if (overviewOnly(current)) continue;
+        // Menus rendered in a portal can appear as new roots after their group
+        // opens. Attach them to the current branch without relying on a module
+        // name; content actions are explored separately by crawler-content.
         const rootName=next.parentNames?.[0]||next.name;
         if(queue.some(existing=>existing.name===next.name&&(existing.parentNames?.[0]||existing.name)===rootName))continue;
         if (!known.has(key(next))) { known.add(key(next)); queue.push(next); }

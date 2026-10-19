@@ -130,7 +130,10 @@ async function discoverMenus(page) {
       if (!item.navigation) continue;
       if (hasPrimaryNavigation && !item.primaryNavigation) continue;
       if (navigable) {
-        try { if (new URL(item.href, frame.url()).origin !== new URL(page.url()).origin) continue; } catch { continue; }
+        // A frame can legitimately be hosted on another origin. Keep its menu
+        // navigation restricted to that frame's own origin instead of comparing
+        // it with the top-level page.
+        try { if (new URL(item.href, frame.url()).origin !== new URL(frame.url()).origin) continue; } catch { continue; }
       }
       // Hidden descendants are discovered now and opened through their parent menu.
       if (!item.visible && !item.parents.length) continue;
@@ -173,8 +176,10 @@ async function login(page, credentials, timeout = 30000) {
       authenticatedSince = 0;
     }
     submitted.add(fingerprint);
-    const control = form.button ? form.frame.locator(form.button.selector) : form.frame.locator((form.password || form.user).selector);
-    await activateLoginControl(control, !!form.button);
+    const inputControl = form.frame.locator((form.password || form.user).selector);
+    const control = form.button ? form.frame.locator(form.button.selector) : inputControl;
+    const remaining = Math.max(250, deadline - Date.now());
+    await activateLoginControl(control, !!form.button, inputControl, remaining);
     await pause(250);
   }
   if (usedPassword && !(await findLogin(page, { strict: true }))) {
@@ -215,17 +220,34 @@ async function authenticationChallenge(page) {
   return null;
 }
 
-async function activateLoginControl(control, isButton = true) {
-  await control.waitFor({ state: 'visible', timeout: 15000 });
+async function activateLoginControl(control, isButton = true, inputControl = null, timeout = 15000) {
+  const startedAt = Date.now();
+  const clickTimeout = Math.min(5000, Math.max(250, Math.floor(timeout * 0.6)));
   try {
+    await control.waitFor({ state: 'visible', timeout: clickTimeout });
     // A native click waits until animated login panels enter the viewport and
     // accept pointer events. Keeping readiness and activation in one action
     // also supports portals that remove siblings during the transition.
-    if (isButton) await control.click({ timeout: 15000 });
-    else await control.press('Enter', { timeout: 15000 });
-  } catch {
-    throw new Error('O controle de autenticação não ficou disponível; ele está desabilitado, fora da área visível ou coberto por outra janela.');
+    if (isButton) await control.click({ timeout: clickTimeout });
+    else await control.press('Enter', { timeout: clickTimeout });
+    return;
+  } catch {}
+  // Some login layouts leave a transparent animation layer over a visible
+  // button. Submitting with Enter from the credential field is the normal
+  // keyboard path and does not bypass disabled controls.
+  const fallbackDeadline = Date.now() + Math.max(250, timeout - (Date.now() - startedAt));
+  for (const candidate of [inputControl, control].filter(Boolean)) {
+    try {
+      const remaining = Math.max(250, fallbackDeadline - Date.now());
+      await candidate.waitFor({ state: 'visible', timeout: remaining });
+      if (!(await candidate.isEnabled())) continue;
+      await candidate.press('Enter', { timeout: remaining });
+      return;
+    } catch {}
   }
+  const error = new Error('O controle de autenticação não ficou disponível; ele está desabilitado, fora da área visível ou coberto por outra janela.');
+  error.code = 'AUTH_CONTROL_BLOCKED';
+  throw error;
 }
 
 async function openMenu(page, entry, options = {}) {

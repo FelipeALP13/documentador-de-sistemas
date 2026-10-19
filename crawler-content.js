@@ -5,7 +5,7 @@ const normalize = text => String(text || '').normalize('NFD').replace(/[\u0300-\
 const opening = /^(?:nov[oa](?:\s|$)|criar (?:um |uma )?nov[oa](?:\s|$)|adicionar(?:\s|$)|cadastrar(?:\s|$)|incluir(?:\s|$)|novo cadastro(?:\s|$))/;
 const dangerous = /\b(salvar|gravar|excluir|deletar|remover|enviar|submeter|confirmar|finalizar|publicar|pagar|aprovar|reprovar|bloquear|desativar|inativar)\b/;
 
-async function signature(page) {
+async function pageSignature(page) {
   const data = [];
   for (const frame of page.frames()) data.push(await frame.evaluate(() => ({
     url: location.href.split('#')[0], text: document.body?.innerText || '',
@@ -135,14 +135,13 @@ async function activateForm(page, descriptor) {
   }
 }
 
-async function exploreContent(page, parts, { capture, report, restore, interfaceOptions = {}, onAction = () => {}, isKnownScreen = () => false }) {
-  const waitOn = target => waitForInterface(target, { ...interfaceOptions, failureCheck:target===page?interfaceOptions.failureCheck:undefined, allowForms: true })
-    .catch(error=>{if(!(interfaceOptions.allowBlocked&&error.code==='UI_BLOCKED'))throw error});
+async function exploreContent(page, parts, { capture, report, restore, interfaceOptions = {}, onAction = () => {}, isKnownScreen = () => false, runReadAction = action => action() }) {
+  const waitOn = target => waitForInterface(target, { ...interfaceOptions, failureCheck:target===page?interfaceOptions.failureCheck:undefined, allowForms: true });
   const wait = () => waitOn(page);
   const restoreRoute = async route => {
     await restore();
     const restored = [];
-    for (const tab of route) { restored.push(tab.name); onAction(restored.join(' > ')); await activate(page, tab); await wait(); }
+    for (const tab of route) { restored.push(tab.name); onAction(restored.join(' > ')); await runReadAction(async()=>{await activate(page, tab);await wait()}); }
   };
   // Read every visible tab, including JSP/Bootstrap tabs without role="tab".
   async function tabs(labels, route, ancestors = new Set(), depth = 0, allowNew = true, currentPage = page) {
@@ -153,8 +152,7 @@ async function exploreContent(page, parts, { capture, report, restore, interface
       if (ancestors.has(key(tab))) continue;
       try {
         onAction([...labels, tab.name].join(' > '));
-        await activate(currentPage, tab);
-        await waitOn(currentPage);
+        await runReadAction(async()=>{await activate(currentPage, tab);await waitOn(currentPage)});
         await capture([...labels, tab.name], 'aba', currentPage);
         const nextRoute = [...route, tab];
         if (allowNew) await forms([...labels, tab.name], nextRoute);
@@ -172,12 +170,11 @@ async function exploreContent(page, parts, { capture, report, restore, interface
     for (const opener of openers) {
       let formPage=page;
       try {
-        const before = await signature(page);
+        const before = await pageSignature(page);
         onAction([...labels, opener.name].join(' > '));
-        formPage=await activateForm(page,opener);
-        await waitOn(formPage);
+        await runReadAction(async()=>{formPage=await activateForm(page,opener);await waitOn(formPage)});
         const deadline = Date.now() + 5000;
-        while ((await signature(formPage)) === before) {
+        while ((await pageSignature(formPage)) === before) {
           if (Date.now() >= deadline) throw Object.assign(new Error('O controle Novo não abriu outra tela; nenhuma alteração foi realizada.'), { code: 'FORM_NOT_OPENED', recoverable: true });
           await formPage.waitForTimeout(150);
           await waitOn(formPage);
@@ -201,8 +198,7 @@ async function exploreContent(page, parts, { capture, report, restore, interface
       visited.add(key);
       try {
         onAction([...labels, screen.name].join(' > '));
-        await activate(page, screen);
-        await wait();
+        await runReadAction(async()=>{await activate(page, screen);await wait()});
         await capture([...labels, screen.name], 'tela');
         const nextRoute = [...route, screen];
         await forms([...labels, screen.name], nextRoute);
@@ -220,4 +216,4 @@ async function exploreContent(page, parts, { capture, report, restore, interface
   await screens(parts, []);
 }
 
-module.exports = { exploreContent, controls, activate };
+module.exports = { exploreContent, controls, activate, pageSignature };

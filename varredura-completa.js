@@ -5,7 +5,7 @@ const {chromium}=require('playwright');
 const ui=require('./crawler-interface');
 const {waitForInterface}=require('./crawler-ui-state');
 const {walkMenus}=require('./crawler-navigation');
-const {exploreContent}=require('./crawler-content');
+const {exploreContent,pageSignature}=require('./crawler-content');
 const {attachNetworkMonitor}=require('./crawler-network');
 function slug(s){return s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/gi,'_').replace(/^_|_$/g,'').slice(0,65)||'sem_nome'}
 async function main(options={}){
@@ -15,15 +15,26 @@ async function main(options={}){
  const out=path.join(root,run);
  const records=[];const errors=[];const hashes=new Map();
  const warnings=[];const notices=[];
- const blockedWarnings=new Set();
  let status='running',traversal=null;
  const log=options.log||console.log;
  const secrets=[env.SISTEMA_USER,env.SISTEMA_PASS];
  const redact=ui.redactor(secrets);
  function flush(menu){fs.writeFileSync(path.join(out,'scan-manifest.json'),JSON.stringify({run,startedAt:run,finishedAt:status==='running'?null:new Date().toISOString(),status,traversal,menu:menu.map(m=>({name:m.name,framePath:m.framePath})),records,errors,warnings,notices},(key,value)=>['image','duplicateOf','diagnostic','sha256','run','startedAt','finishedAt'].includes(key)?value:typeof value==='string'?redact(value):value,2))}
  fs.mkdirSync(out,{recursive:true});
- let browser,context,page,network,readOnly=false,authNavigation=null,allowAuthReplay=false,authenticatedUrl='';
+ let browser,context,page,network,readOnly=false,authNavigation=null,allowAuthReplay=false,authenticatedUrl='',readActionDepth=0;
  let menu=[];
+ const withReadAction=async action=>{
+  readActionDepth++;
+  try{return await action()}finally{readActionDepth--}
+ };
+ const pageShowsLabel=async label=>{
+  const expected=String(label||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+  for(const frame of page.frames()){
+   const found=await frame.locator('h1:visible,h2:visible,[aria-current="page"]:visible,.breadcrumb .active:visible').evaluateAll((elements,value)=>elements.some(element=>(element.innerText||element.textContent||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLowerCase()===value),expected).catch(()=>false);
+   if(found)return true;
+  }
+  return false;
+ };
  const interfaceOptions={timeout:options.interfaceTimeoutMs||30000,allowBlocked:true,failureCheck:()=>network?.failure(),onNotice:message=>{notices.push({message});log(message)}};
  const handleRequest=route=>{
   const settle=promise=>promise.catch(error=>{if(!/Route is already handled/i.test(error.message))throw error});
@@ -33,7 +44,12 @@ async function main(options={}){
   const destructiveNavigation=/(?:^|[\/_?&=.-])(delete|remove|destroy|save|update|submit|approve|reject|publish|payment|pay|cancel|confirm|finalize|logout|signout|excluir|remover|salvar|gravar|atualizar|enviar|submeter|aprovar|reprovar|publicar|pagar|cancelar|confirmar|finalizar|encerrar|sair)(?:$|[\/_?&=.-])/i.test(description);
   const authReplay=allowAuthReplay&&authNavigation&&method===authNavigation.method&&request.url()===authNavigation.url;
   const mutationMethod=!['GET','HEAD','OPTIONS'].includes(method);
-  const blocked=['PUT','PATCH','DELETE'].includes(method)||(readOnly&&!authReplay&&(mutationMethod||(method==='GET'&&destructiveNavigation)));
+  // Several JSP systems load a consultation screen through POST/XHR. Permit a
+  // neutral POST only while the crawler is activating a control that it has
+  // already classified as safe. Background writes remain blocked, as do all
+  // requests whose URL or payload describes a destructive action.
+  const scopedReadPost=readActionDepth>0&&method==='POST'&&!destructiveNavigation;
+  const blocked=['PUT','PATCH','DELETE'].includes(method)||(readOnly&&!authReplay&&((mutationMethod&&!scopedReadPost)||destructiveNavigation));
   if(blocked){notices.push({message:'Uma tentativa de alteração foi bloqueada pelo modo somente leitura.'});return settle(route.abort('aborted'))}
   return settle(route.continue());
  };
@@ -111,17 +127,9 @@ async function main(options={}){
    if(!(await resumeCurrent()))throw new Error('A interface autenticada não ficou disponível durante a recuperação.');
   };
   flush(menu);log('Menus encontrados:',menu.length);
-  const tolerateBlocked=(label,error)=>{
-   if(error?.code!=='UI_BLOCKED')throw error;
-   interfaceOptions.timeout=Math.min(interfaceOptions.timeout,5000);
-   if(blockedWarnings.has(label))return;
-   blockedWarnings.add(label);
-   const warning={label:redact(label),error:'A tela manteve um indicador de carregamento após o prazo; a captura foi preservada.',code:'UI_BLOCKED'};
-   warnings.push(warning);flush(menu);log(`Aviso em ${warning.label}: ${warning.error}`);
-  };
   async function capture(parts,kind,targetPage=page){
    const label=parts.join(' > ');
-   await waitForInterface(targetPage,{...interfaceOptions,failureCheck:targetPage===page?interfaceOptions.failureCheck:undefined,allowForms:true}).catch(error=>tolerateBlocked(label,error));
+   await waitForInterface(targetPage,{...interfaceOptions,failureCheck:targetPage===page?interfaceOptions.failureCheck:undefined,allowForms:true});
    let bytes;
    for(let attempt=0;attempt<3&&!bytes;attempt++){
     try{bytes=await targetPage.screenshot({type:'jpeg',quality:84,fullPage:false,timeout:15000})}
@@ -141,21 +149,29 @@ async function main(options={}){
   }
   traversal=await walkMenus(page,menu,{
    maxMenus:options.maxMenus||1000,
-   open:async entry=>{const label=[...entry.parentNames||[],entry.name].join(' > ');network.reset(label);await ui.openMenu(page,entry,interfaceOptions).catch(error=>tolerateBlocked(label,error));if(await ui.findLogin(page,{strict:true}))throw Object.assign(new Error('A sessão retornou à tela de login.'),{code:'SESSION_EXPIRED'});},
+   open:async entry=>withReadAction(async()=>{
+    const label=[...entry.parentNames||[],entry.name].join(' > '),before=await pageSignature(page),alreadyVisible=await pageShowsLabel(entry.name);
+    const frame=ui.resolveFrame(page,entry.framePath);
+    const href=String(entry.href||'').trim();
+    const alreadyAtTarget=!!frame&&href&&!/^(?:#|javascript:|mailto:|tel:)/i.test(href)&&new URL(href,frame.url()).href.split('#')[0]===frame.url().split('#')[0];
+    network.reset(label);await ui.openMenu(page,entry,interfaceOptions);
+    if(await ui.findLogin(page,{strict:true}))throw Object.assign(new Error('A sessão retornou à tela de login.'),{code:'SESSION_EXPIRED'});
+    return {changed:alreadyVisible||alreadyAtTarget||(await pageSignature(page))!==before};
+   }),
    recover,report,onQueue:()=>flush(menu),onWarning:message=>{warnings.push(message);log(message)},
    onRetry:entry=>{const message=redact(`Nova tentativa de navegação: ${[...entry.parentNames||[],entry.name].join(' > ')}`);notices.push({message});log(message)},
    visit:async entry=>{
     const parts=entry.parentNames?.length?[...entry.parentNames,entry.name]:[entry.name];
     await capture(parts,'geral');
-    await exploreContent(page,parts,{capture,report,interfaceOptions,onAction:label=>network.reset(label),isKnownScreen:name=>menu.some(item=>item.name===name),restore:async()=>{
+    await exploreContent(page,parts,{capture,report,interfaceOptions,runReadAction:withReadAction,onAction:label=>network.reset(label),isKnownScreen:name=>menu.some(item=>item.name===name),restore:async()=>{
      const findCurrent=async()=>(await ui.discoverMenus(page)).find(item=>item.name===entry.name&&JSON.stringify(item.parentNames)===JSON.stringify(entry.parentNames)&&JSON.stringify(item.framePath)===JSON.stringify(entry.framePath)&&(!entry.virtual||page.url().split('#')[0]===authenticatedUrl));
      network.reset(`retorno para ${parts.join(' > ')}`);
      let current=await findCurrent();
-     if(current||!entry.virtual){try{await ui.openMenu(page,current||entry,interfaceOptions);return}catch{}}
+     if(current||!entry.virtual){try{await withReadAction(()=>ui.openMenu(page,current||entry,interfaceOptions));return}catch{}}
      await recover();
      current=await findCurrent();
      if(!current&&entry.virtual)throw Object.assign(new Error('Não foi possível retornar à tela após abrir o formulário.'),{code:'RESTORE_FAILED',recoverable:true});
-     try{await ui.openMenu(page,current||entry,interfaceOptions)}catch{throw Object.assign(new Error('Não foi possível retornar à tela após abrir o formulário.'),{code:'RESTORE_FAILED',recoverable:true})}
+     try{await withReadAction(()=>ui.openMenu(page,current||entry,interfaceOptions))}catch{throw Object.assign(new Error('Não foi possível retornar à tela após abrir o formulário.'),{code:'RESTORE_FAILED',recoverable:true})}
     }});
    }
   });

@@ -24,12 +24,12 @@ async function walkMenus(page, queue, {
     const entry = queue[index];
     attempted++;
     try {
-      let current;
+      let current, openResult;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           const found=findCurrent(await discover(),entry);
           current=refreshEntry(found,entry);
-          await open(current);
+          openResult=await open(current);
           break;
         } catch (error) {
           const transient = error.name === 'TimeoutError' || ['MENU_MISSING','MENU_HIDDEN','MENU_BLOCKED','UI_BLOCKED','HTTP_5XX','NETWORK_FAILURE','SESSION_EXPIRED'].includes(error.code);
@@ -65,6 +65,9 @@ async function walkMenus(page, queue, {
       }
       onQueue();
       const isGroup = queue.some(next => next!==entry&&JSON.stringify(next.framePath) === JSON.stringify(current.framePath) && next.parents.includes(current.selector));
+      if(!isGroup&&openResult?.changed===false){
+        throw Object.assign(new Error('O item foi acionado, mas o conteúdo da tela não mudou; nenhuma captura incorreta foi gravada.'),{code:'SCREEN_NOT_OPENED',recoverable:true});
+      }
       if (!isGroup) { await visit(current); visited++; }
       consecutiveErrors = 0;
     } catch (error) {

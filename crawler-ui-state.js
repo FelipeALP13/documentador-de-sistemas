@@ -26,6 +26,12 @@ async function snapshot(frame) {
       }
       return parts.join(' ').slice(0, 2000);
     };
+    const loadingText = [...document.querySelectorAll('body *')].filter(el => {
+      if (!visible(el) || el.children.length > 4) return false;
+      const ownText = [...el.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join(' ')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+      return /^(?:carregando|loading|aguarde|processando)(?:\.{0,3})?$/.test(ownText);
+    });
     return {
       dialogs: candidates.filter(el => !candidates.some(other => other !== el && el.contains(other))).map(el => ({
         selector: selector(el), text: messageText(el),
@@ -39,7 +45,7 @@ async function snapshot(frame) {
         const rect = el.getBoundingClientRect();
         return visible(el) && (rect.width * rect.height > innerWidth * innerHeight * 0.2
           || (el.matches('.blockUI.blockMsg') && getComputedStyle(el).position === 'fixed'));
-      }).map(el => ({ selector: selector(el) })),
+      }).concat(loadingText).filter((el,index,all)=>all.indexOf(el)===index).map(el => ({ selector: selector(el) })),
     };
   }, { dialogs, loaders });
 }
@@ -100,6 +106,7 @@ async function waitForInterface(page, { timeout = 30000, quietMs = 650, allowFor
   }
   const error = new Error('A interface permaneceu bloqueada por carregamento ou aviso.');
   error.code = 'UI_BLOCKED';
+  error.recoverable = true;
   throw error;
 }
 

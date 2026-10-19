@@ -12,7 +12,7 @@ const { walkMenus } = require('./crawler-navigation');
 const { exploreContent, controls: contentControls } = require('./crawler-content');
 const { attachNetworkMonitor } = require('./crawler-network');
 
-let server, base, browser, expireRequests = 0, spaLoginRequests = 0, spaFormLoginRequests = 0, opaqueWrites = 0;
+let server, base, browser, expireRequests = 0, spaLoginRequests = 0, spaFormLoginRequests = 0, opaqueWrites = 0, readPosts = 0;
 const requests = [];
 const modern = `<form action="/modern-home"><input type="search" placeholder="Pesquisar"><input id="email" autocomplete="username"><input id="senha" type="password"><button type="submit">Entrar</button></form>`;
 const legacy = `<title>Sistema legado</title><form id="frmLogin" action="/frames"><label for="usuario">Usuário</label><input id="usuario" name="usuario_login"><input id="senha" name="senha_login" type="password"><input type="submit" value="Entrar"></form>`;
@@ -23,6 +23,7 @@ before(async () => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     if (route === '/missing.jsp') { res.statusCode = 404; res.end('Not found'); return; }
     if (route === '/opaque-write') { opaqueWrites++; res.end('alterado'); return; }
+    if (route === '/read-screen') { readPosts++; res.end('<h1>Tela consultada por POST</h1><p>Conteúdo correto</p>'); return; }
     if (route === '/reauth-home') {
       if (req.method === 'POST') res.end(`<nav><a href="/expire-once">Relatório protegido</a></nav><main>Sessão ativa</main>`);
       else res.end(`<form action="/reauth-home" method="post"><input name="usuario_login"><input type="password" name="senha_login"><button type="submit">Entrar</button></form>`);
@@ -98,6 +99,8 @@ before(async () => {
       '/http-good': `<main>Consulta disponível</main>`,
       '/mutation-login': modern.replace('/modern-home','/mutation-home'),
       '/mutation-home': `<nav><a href="#" onclick="fetch('/opaque-write',{method:'POST',body:'registro=1'}).catch(()=>{});document.querySelector('main').textContent='Consulta aberta'">Consulta</a></nav><main>Início</main>`,
+      '/post-read-login': modern.replace('/modern-home','/post-read-home'),
+      '/post-read-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Carregando';fetch('/read-screen',{method:'POST',body:'tela=clientes'}).then(response=>response.text()).then(html=>document.querySelector('main').innerHTML=html)">Clientes</a><a href="#" onclick="fetch('/save-record',{method:'POST',body:'acao=salvar'});document.querySelector('main').textContent='Não deveria abrir'">Salvar registro</a></nav><main>Início</main>`,
       '/frame-menu': `<nav><a href="/clientes.jsp">Clientes do frame</a></nav>`,
       '/blocked-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Consulta inicial'">Consulta</a><a href="#" onclick="document.body.insertAdjacentHTML('beforeend', '<div role=dialog style=position:fixed;inset:0;background:white;z-index:99>Deseja excluir o cadastro?<button onclick=window.confirmed=true>OK</button></div>')">Operacional</a><a href="#" onclick="document.querySelector('main').textContent='Próxima tela'">FI</a></nav><main>Início</main>`,
     };
@@ -667,15 +670,32 @@ test('404 real vira aviso com diagnóstico sem query e não impede as próximas 
   assert.match(warning.error, /HTTP 404/);
 });
 
-test('modo somente leitura bloqueia POST mesmo quando a URL não revela a escrita', async () => {
-  opaqueWrites = 0;
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-readonly-'));
-  const result = await scan({ credentials: credentials('/mutation-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000 });
+test('modo somente leitura permite POST neutro da navegação e bloqueia ações perigosas', async () => {
+  readPosts = 0;
+  const start = requests.length;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-post-read-'));
+  const result = await scan({ credentials: credentials('/post-read-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000 });
   const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
-  assert.equal(opaqueWrites, 0);
+  assert.equal(readPosts, 1);
   assert.equal(result.errors, 0);
-  assert.ok(manifest.records.some(record => record.text.includes('Consulta aberta')));
-  assert.ok(manifest.notices.some(item => item.message.includes('modo somente leitura')));
+  assert.ok(manifest.records.some(record => record.text.includes('Tela consultada por POST')));
+  assert.ok(!manifest.records.some(record => record.text.includes('Não deveria abrir')));
+  assert.ok(!requests.slice(start).some(route => route === '/save-record'));
+});
+
+test('menu sem transição não recebe uma captura com o nome de outra tela', async () => {
+  const queue=[{name:'Tela sem efeito',selector:'#noop',href:'#',id:'noop',parents:[],parentNames:[],framePath:[]}];
+  const reports=[];
+  const result=await walkMenus({},queue,{
+    discover:async()=>queue,
+    open:async()=>({changed:false}),
+    visit:async()=>assert.fail('a tela sem transição não pode ser capturada'),
+    report:async(label,error)=>{reports.push({label,code:error.code});return {recoverable:true}},
+    recover:async()=>{},
+  });
+  assert.equal(result.visited,0);
+  assert.equal(result.skipped,1);
+  assert.deepEqual(reports,[{label:'Tela sem efeito',code:'SCREEN_NOT_OPENED'}]);
 });
 
 test('monitor ignora credenciais de login e descarta erros da ação anterior', async () => {

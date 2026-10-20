@@ -19,7 +19,7 @@ async function main(options={}){
  const log=options.log||console.log;
  const secrets=[env.SISTEMA_USER,env.SISTEMA_PASS];
  const redact=ui.redactor(secrets);
- function flush(menu){fs.writeFileSync(path.join(out,'scan-manifest.json'),JSON.stringify({run,startedAt:run,finishedAt:status==='running'?null:new Date().toISOString(),status,traversal,menu:menu.map(m=>({name:m.name,framePath:m.framePath})),records,errors,warnings,notices},(key,value)=>['image','duplicateOf','diagnostic','sha256','run','startedAt','finishedAt'].includes(key)?value:typeof value==='string'?redact(value):value,2))}
+ function flush(menu){fs.writeFileSync(path.join(out,'scan-manifest.json'),JSON.stringify({run,startedAt:run,finishedAt:status==='running'?null:new Date().toISOString(),status,traversal,menu:menu.map(m=>({name:m.name,parentNames:m.parentNames||[],framePath:m.framePath})),records,errors,warnings,notices},(key,value)=>['image','duplicateOf','diagnostic','sha256','run','startedAt','finishedAt'].includes(key)?value:typeof value==='string'?redact(value):value,2))}
  fs.mkdirSync(out,{recursive:true});
  let browser,context,page,network,readOnly=false,authNavigation=null,allowAuthReplay=false,authenticatedUrl='',readActionDepth=0;
  let menu=[];

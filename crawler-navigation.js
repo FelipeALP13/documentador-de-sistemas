@@ -17,6 +17,7 @@ async function walkMenus(page, queue, {
   open = entry => ui.openMenu(page, entry), visit, recover, report, onQueue = () => {}, onWarning = () => {}, onRetry = () => {},
 }) {
   const known = new Set(queue.map(key));
+  const knownSemantic = new Set(queue.map(semanticKey));
   const seenCounts = new Map();
   for(const entry of queue)seenCounts.set(nameKey(entry),(seenCounts.get(nameKey(entry))||0)+1);
   let attempted = 0, visited = 0, skipped = 0, consecutiveErrors = 0, failures = 0, interrupted = false;
@@ -59,16 +60,16 @@ async function walkMenus(page, queue, {
         // Menus rendered in a portal can appear as new roots after their group
         // opens. Attach them to the current branch without relying on a module
         // name; content actions are explored separately by crawler-content.
-        const rootName=next.parentNames?.[0]||next.name;
-        if(queue.some(existing=>existing.name===next.name&&(existing.parentNames?.[0]||existing.name)===rootName))continue;
-        if (!known.has(key(next))) { known.add(key(next)); queue.push(next); }
+        if (!known.has(key(next))&&!knownSemantic.has(semanticKey(next))) {
+          known.add(key(next));knownSemantic.add(semanticKey(next));queue.push(next);
+        }
       }
       onQueue();
       const isGroup = queue.some(next => next!==entry&&JSON.stringify(next.framePath) === JSON.stringify(current.framePath) && next.parents.includes(current.selector));
       if(!isGroup&&openResult?.changed===false){
         throw Object.assign(new Error('O item foi acionado, mas o conteúdo da tela não mudou; nenhuma captura incorreta foi gravada.'),{code:'SCREEN_NOT_OPENED',recoverable:true});
       }
-      if (!isGroup) { await visit(current); visited++; }
+      if (!isGroup||openResult?.changed===true) { await visit(current); visited++; }
       consecutiveErrors = 0;
     } catch (error) {
       error.action = { name: entry.name, selector: entry.selector, framePath: entry.framePath, ...error.action };

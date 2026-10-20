@@ -12,7 +12,7 @@ const { walkMenus } = require('./crawler-navigation');
 const { exploreContent, controls: contentControls } = require('./crawler-content');
 const { attachNetworkMonitor } = require('./crawler-network');
 
-let server, base, browser, expireRequests = 0, spaLoginRequests = 0, spaFormLoginRequests = 0, opaqueWrites = 0, readPosts = 0;
+let server, base, browser, expireRequests = 0, spaLoginRequests = 0, spaFormLoginRequests = 0, opaqueWrites = 0, readPosts = 0, lateTreeRequests = 0;
 const requests = [];
 const modern = `<form action="/modern-home"><input type="search" placeholder="Pesquisar"><input id="email" autocomplete="username"><input id="senha" type="password"><button type="submit">Entrar</button></form>`;
 const legacy = `<title>Sistema legado</title><form id="frmLogin" action="/frames"><label for="usuario">Usuário</label><input id="usuario" name="usuario_login"><input id="senha" name="senha_login" type="password"><input type="submit" value="Entrar"></form>`;
@@ -24,6 +24,7 @@ before(async () => {
     if (route === '/missing.jsp') { res.statusCode = 404; res.end('Not found'); return; }
     if (route === '/opaque-write') { opaqueWrites++; res.end('alterado'); return; }
     if (route === '/read-screen') { readPosts++; res.end('<h1>Tela consultada por POST</h1><p>Conteúdo correto</p>'); return; }
+    if (route === '/late-tree-data') { lateTreeRequests++; res.end(`<a href="#" onclick="document.querySelector('main').textContent='Cadastro tardio carregado'">Cadastro tardio</a>`); return; }
     if (route === '/reauth-home') {
       if (req.method === 'POST') res.end(`<nav><a href="/expire-once">Relatório protegido</a></nav><main>Sessão ativa</main>`);
       else res.end(`<form action="/reauth-home" method="post"><input name="usuario_login"><input type="password" name="senha_login"><button type="submit">Entrar</button></form>`);
@@ -74,6 +75,8 @@ before(async () => {
       '/covered-login': `<form action="/modern-home"><input autocomplete="username"><input type="password"><button type="submit">Entrar</button></form><div style="position:fixed;inset:0;z-index:10"></div>`,
       '/delayed-menu-login': modern.replace('/modern-home','/delayed-menu-home'),
       '/delayed-menu-home': `<main>Carregando módulos</main><script>setTimeout(()=>{const nav=document.createElement('nav');const link=document.createElement('a');link.href='#';link.textContent='Módulo tardio';link.onclick=()=>document.querySelector('main').textContent='Módulo carregado';nav.append(link);document.body.prepend(nav)},2200)</script>`,
+      '/late-tree-login': modern.replace('/modern-home','/late-tree-home'),
+      '/late-tree-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Dashboard carregado'">Dashboard</a></nav><main>Início</main><script>setTimeout(()=>fetch('/late-tree-data',{method:'POST'}).then(response=>response.text()).then(html=>document.querySelector('nav').insertAdjacentHTML('beforeend',html)),700)</script>`,
       '/alert-login': modern.replace('/modern-home','/alert-home'),
       '/alert-home': `<style>.swal2-container,.blockOverlay{position:fixed;inset:0;background:#0008;z-index:10}.swal2-popup{background:white;margin:100px;padding:20px}.blockOverlay{z-index:20}</style><nav><a href="#" onclick="document.querySelector('main').textContent='BI - Operacional';setTimeout(showAlert,100)">Operacional</a><a href="#" onclick="document.querySelector('main').textContent='Lançamento financeiro'">FI</a></nav><main>Início</main><script>function showAlert(){const d=document.createElement('div');d.className='swal2-container';d.innerHTML='<div class="swal2-popup" role="dialog"><h2>Atenção!</h2><p>Sem dados para serem trabalhados</p><button type="button">OK</button></div>';d.querySelector('button').onclick=()=>d.remove();document.body.append(d);const loader=document.createElement('div');loader.className='blockUI blockOverlay';document.body.append(loader);setTimeout(()=>loader.remove(),900)}</script>`,
       '/blocked-login': modern.replace('/modern-home','/blocked-home'),
@@ -195,6 +198,16 @@ test('login aguarda menus carregados de forma assíncrona', async () => {
     const menus = await ui.login(page, credentials('/delayed-menu-login'), 7000);
     assert.ok(menus.some(entry => entry.name === 'Módulo tardio' && !entry.virtual));
   } finally { await page.close(); }
+});
+
+test('login aguarda a árvore tardia antes de ativar o modo somente leitura', async () => {
+  lateTreeRequests=0;
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'documentador-late-tree-'));
+  const result=await scan({credentials:credentials('/late-tree-login'),artifactsRoot:root,log(){},loginTimeoutMs:10000});
+  const manifest=JSON.parse(fs.readFileSync(path.join(result.out,'scan-manifest.json')));
+  assert.equal(lateTreeRequests,1);
+  assert.ok(manifest.menu.some(item=>item.name==='Cadastro tardio'));
+  assert.ok(manifest.records.some(item=>item.label==='Cadastro tardio'&&item.text.includes('Cadastro tardio carregado')));
 });
 
 test('crawler integrado gera capturas e metadados de frames legados', async () => {
@@ -558,6 +571,38 @@ test('descoberta de submenus não depende do nome do módulo', async () => {
   assert.equal(result.failures, 0);
   assert.deepEqual(queue.map(entry => entry.name), ['Terceiros', 'Operadoras']);
   assert.deepEqual(queue[1].parentNames, ['Terceiros']);
+});
+
+test('submenus homônimos em ramos diferentes do mesmo módulo são preservados', async () => {
+  const root={name:'Administrativo',selector:'#root',href:'#',framePath:[],parents:[],parentNames:[]};
+  const first={name:'Consulta',selector:'#first',href:'#first',framePath:[],parents:['#root','#cadastros'],parentNames:['Administrativo','Cadastros']};
+  const second={name:'Consulta',selector:'#second',href:'#second',framePath:[],parents:['#root','#relatorios'],parentNames:['Administrativo','Relatórios']};
+  const queue=[root];let expanded=false;const visited=[];
+  await walkMenus(null,queue,{
+    discover:async()=>expanded?[root,first,second]:[root],open:async entry=>{if(entry.name===root.name)expanded=true},
+    visit:async entry=>visited.push((entry.parentNames||[]).join(' > ')),recover:async()=>{},report:async()=>({recoverable:false}),
+  });
+  assert.equal(queue.length,3);
+  assert.deepEqual(visited,['Administrativo > Cadastros','Administrativo > Relatórios']);
+});
+
+test('módulo com página própria é capturado antes dos seus submódulos', async () => {
+  const root={name:'Administrativo',selector:'#root',href:'#',framePath:[],parents:[],parentNames:[]};
+  const child={name:'Associados',selector:'#child',href:'#child',framePath:[],parents:['#root'],parentNames:['Administrativo']};
+  const queue=[root];let expanded=false;const visited=[];
+  await walkMenus(null,queue,{
+    discover:async()=>expanded?[root,child]:[root],
+    open:async entry=>{if(entry.name===root.name)expanded=true;return {changed:true}},
+    visit:async entry=>visited.push([...(entry.parentNames||[]),entry.name].join(' > ')),recover:async()=>{},report:async()=>({recoverable:false}),
+  });
+  assert.deepEqual(visited,['Administrativo','Administrativo > Associados']);
+});
+
+test('detecta abas JSP por stepper, fragmento, aria-controls e título em ícone', async () => {
+  const page=await newPage();
+  await page.setContent(`<main><div class="steps"><a href="#dados" title="Dados gerais"><i></i></a><button type="button" aria-controls="documentos">Documentos</button><div onclick="document.querySelector('h2').textContent='Resumo'" title="Resumo"></div></div><section id="dados"></section><section id="documentos"></section><h2>Inicial</h2></main>`);
+  const tabs=await contentControls(page,'tab');
+  assert.deepEqual(tabs.map(item=>item.name),['Dados gerais','Documentos','Resumo']);
 });
 
 test('página virtual de uma rota final não entra novamente na fila de menus', async () => {

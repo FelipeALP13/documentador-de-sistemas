@@ -148,6 +148,7 @@ async function discoverMenus(page) {
 
 async function login(page, credentials, timeout = 30000) {
   const deadline = Date.now() + timeout;
+  const settleMs = Math.min(authenticatedMenuSettleMs, Math.max(750, Math.floor(timeout / 2)));
   const submitted = new Set();
   let usedPassword = false, authenticatedSince = 0;
   while (Date.now() < deadline) {
@@ -162,7 +163,11 @@ async function login(page, credentials, timeout = 30000) {
       if (usedPassword) {
         authenticatedSince ||= Date.now();
         const menus = await discoverMenus(page);
-        if (menus.some(e => e.visible && !e.virtual) || Date.now() - authenticatedSince >= authenticatedMenuSettleMs) return menus;
+        // Keep authentication routes open while the application finishes
+        // loading permission-based and lazy menu branches. Returning as soon
+        // as the first visible item appears can make the read-only router block
+        // the POST that delivers the remaining modules.
+        if (Date.now() - authenticatedSince >= settleMs) return menus;
       }
       await pause(200);
       continue;

@@ -7,11 +7,15 @@ const dangerous = /\b(salvar|gravar|excluir|deletar|remover|enviar|submeter|conf
 
 async function pageSignature(page) {
   const data = [];
-  for (const frame of page.frames()) data.push(await frame.evaluate(() => ({
-    url: location.href.split('#')[0], text: document.body?.innerText || '',
-    fields: [...document.querySelectorAll('input,select,textarea,[role="dialog"]')].filter(el => el.getClientRects().length)
+  for (const frame of page.frames()) data.push(await frame.evaluate(() => {
+    const root=document.querySelector('main,[role="main"],#content,#conteudo,.main-content,.content')||document.body;
+    const copy=root?.cloneNode(true);
+    if(root===document.body)copy?.querySelectorAll('nav,header,aside,footer,[role="navigation"],script,style').forEach(element=>element.remove());
+    return {
+    url: location.href.split('#')[0], text: copy?.innerText || copy?.textContent || '',
+    fields: [...root.querySelectorAll('input,select,textarea,[role="dialog"]')].filter(el => el.getClientRects().length)
       .map(el => [el.tagName, el.getAttribute('type'), el.getAttribute('name')]),
-  })).catch(() => null));
+  }}).catch(() => null));
   // Keep only a digest in memory; never persist field values or this DOM data.
   return require('node:crypto').createHash('sha256').update(JSON.stringify(data)).digest('hex');
 }
@@ -19,7 +23,7 @@ async function pageSignature(page) {
 async function controls(page, kind) {
   const result = [];
   for (const frame of page.frames()) {
-    const items = await frame.locator('button,a,input[type="button"],input[type="submit"],[role="button"],[role="tab"]').evaluateAll(elements => {
+    const items = await frame.locator('button,a,input[type="button"],input[type="submit"],[role="button"],[role="tab"],[onclick],[aria-controls],[data-target],[data-bs-target]').evaluateAll(elements => {
       const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
       const activeDialog = [...document.querySelectorAll('[role="dialog"],[role="alertdialog"],.modal')].filter(visible)
         .sort((a, b) => (parseInt(getComputedStyle(a).zIndex) || 0) - (parseInt(getComputedStyle(b).zIndex) || 0)).at(-1);
@@ -34,22 +38,31 @@ async function controls(page, kind) {
         return parts.join(' > ');
       };
       return elements.filter(el => visible(el) && (!activeDialog || activeDialog.contains(el)) && !el.disabled && el.getAttribute('aria-disabled') !== 'true')
-        .map(el => ({
+        .map(el => {
+          const href=el.getAttribute('href')||'';
+          const fallback=el.querySelector('[aria-label],[title]');
+          const caption=(el.getAttribute('aria-label')||el.getAttribute('title')||fallback?.getAttribute('aria-label')||fallback?.getAttribute('title')||(el.tagName==='INPUT'?el.getAttribute('value'):el.innerText)||'').trim();
+          const tabContainer=el.closest('[role="tablist"],.nav-tabs,.nav-pills,.tabs,.tabs-header,.tab-list,.tablist,.steps,.wizard-steps,.stepper,.step-navigation');
+          const fragmentTarget=/^#[A-Za-z][\w:.-]*$/.test(href)&&document.querySelector(href);
+          const stepButton=/^(?:proximo|próximo|anterior|next|previous)$/i.test(caption.replace(/\s+/g,' ').trim());
+          const tab=el.matches('[role="tab"],[data-toggle="tab"],[data-bs-toggle="tab"],.nav-tabs a,.nav-pills a')||!!tabContainer||!!fragmentTarget||el.hasAttribute('aria-controls')||el.hasAttribute('data-target')||el.hasAttribute('data-bs-target')||stepButton;
+          return ({
           selector: selector(el),
           // Only static button captions; never read text/password input values.
-          name: (el.getAttribute('aria-label') || el.getAttribute('title') || (el.tagName === 'INPUT' ? el.getAttribute('value') : el.innerText) || '').trim(),
+          name: caption,
           submit: !!el.form && ['submit', 'image'].includes(el.type),
           navigation: !!el.closest('nav,aside,[role="navigation"],.sidebar'),
+          primaryNavigation: !!el.closest('nav,aside,header,[role="navigation"],.sidebar,[id*="menu" i],[class*="menu" i]'),
           editor: !!el.closest('.tox,.mce-container,.cke,.ck-editor,[contenteditable="true"]'),
-          tab: el.matches('[role="tab"],[data-toggle="tab"],[data-bs-toggle="tab"],.nav-tabs a,.nav-pills a'),
+          tab,
           selected: el.getAttribute('aria-selected') === 'true' || el.classList.contains('active') || el.parentElement?.classList.contains('active'),
-          href: el.getAttribute('href') || '',
+          href,
           screen: !el.closest('nav,aside,header,[role="navigation"],form,table,[role="dialog"],[role="alertdialog"],.modal,.dropdown-menu,.pagination')
-            && !el.matches('[role="tab"],[data-toggle="tab"],[data-bs-toggle="tab"],.nav-tabs a,.nav-pills a')
+            && !tab
             && !!el.closest('main,[role="main"],#content,#conteudo,.content')
             && (el.getAttribute('role') === 'link' || (el.matches('a[href]') && !/^(#|javascript:|mailto:|tel:)/i.test(el.getAttribute('href'))
               && (() => { try { return new URL(el.href).origin === location.origin; } catch { return false; } })())),
-        }));
+        })});
     }).catch(() => []);
     const indices = [];
     for (let f = frame; f.parentFrame(); f = f.parentFrame()) indices.unshift(f.parentFrame().childFrames().indexOf(f));
@@ -58,7 +71,7 @@ async function controls(page, kind) {
       const name = normalize(item.name);
       if (!name || item.submit || item.editor || dangerous.test(name)) continue;
       if (kind === 'new' && (!opening.test(name) || item.navigation)) continue;
-      if (kind === 'tab' && !item.tab) continue;
+      if (kind === 'tab' && (!item.tab || item.primaryNavigation)) continue;
       if (kind === 'screen' && (!item.screen || opening.test(name))) continue;
       const occurrence = counts.get(name) || 0;
       counts.set(name, occurrence + 1);

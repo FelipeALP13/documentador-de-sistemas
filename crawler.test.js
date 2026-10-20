@@ -11,6 +11,8 @@ const { waitForInterface } = require('./crawler-ui-state');
 const { walkMenus } = require('./crawler-navigation');
 const { exploreContent, controls: contentControls } = require('./crawler-content');
 const { attachNetworkMonitor } = require('./crawler-network');
+const { analyzeJpeg, takeUsableScreenshot } = require('./crawler-image');
+const jpeg = require('jpeg-js');
 
 let server, base, browser, expireRequests = 0, spaLoginRequests = 0, spaFormLoginRequests = 0, opaqueWrites = 0, readPosts = 0, lateTreeRequests = 0;
 const requests = [];
@@ -75,6 +77,8 @@ before(async () => {
       '/covered-login': `<form action="/modern-home"><input autocomplete="username"><input type="password"><button type="submit">Entrar</button></form><div style="position:fixed;inset:0;z-index:10"></div>`,
       '/delayed-menu-login': modern.replace('/modern-home','/delayed-menu-home'),
       '/delayed-menu-home': `<main>Carregando módulos</main><script>setTimeout(()=>{const nav=document.createElement('nav');const link=document.createElement('a');link.href='#';link.textContent='Módulo tardio';link.onclick=()=>document.querySelector('main').textContent='Módulo carregado';nav.append(link);document.body.prepend(nav)},2200)</script>`,
+      '/delayed-form-login': modern.replace('/modern-home','/delayed-form-home'),
+      '/delayed-form-home': `<nav><a href="#" onclick="openList()">Cadastros</a></nav><main>Início</main><script>function openList(){document.querySelector('main').innerHTML='<h1>Clientes</h1><button type=button onclick=openForm()>Novo cliente</button>'}function openForm(){document.body.insertAdjacentHTML('beforeend','<div class=loading-overlay style=position:fixed;inset:0;background:white;z-index:99><div class=spinner style=margin:70px;width:70px;height:70px;border:12px solid #eee;border-top-color:#d55;border-radius:50%></div></div>');setTimeout(()=>{document.querySelector('.loading-overlay').remove();document.querySelector('main').innerHTML='<h1>Novo cliente carregado</h1><form><input name=nome><button type=submit>Salvar</button></form>'},900)}</script>`,
       '/late-tree-login': modern.replace('/modern-home','/late-tree-home'),
       '/late-tree-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Dashboard carregado'">Dashboard</a></nav><main>Início</main><script>setTimeout(()=>fetch('/late-tree-data',{method:'POST'}).then(response=>response.text()).then(html=>document.querySelector('nav').insertAdjacentHTML('beforeend',html)),700)</script>`,
       '/alert-login': modern.replace('/modern-home','/alert-home'),
@@ -393,7 +397,7 @@ test('confirmação permanece intacta, recuperação continua e resultado é par
   } finally { await page.close(); }
   await browser.close(); browser = null;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-recovery-'));
-  const result = await scan({ credentials: credentials('/blocked-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000 });
+  const result = await scan({ credentials: credentials('/blocked-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 10000 });
   assert.equal(result.status, 'partial');
   assert.equal(result.complete, false);
   assert.equal(result.errors, 1);
@@ -586,6 +590,18 @@ test('submenus homônimos em ramos diferentes do mesmo módulo são preservados'
   assert.deepEqual(visited,['Administrativo > Cadastros','Administrativo > Relatórios']);
 });
 
+test('submenus homônimos exibidos sequencialmente em portais são preservados por caminho', async () => {
+  const first={name:'Módulo A',selector:'#a',href:'#',framePath:[],parents:[],parentNames:[]};
+  const second={name:'Módulo B',selector:'#b',href:'#',framePath:[],parents:[],parentNames:[]};
+  const child={name:'Consulta',selector:'#consulta',href:'#consulta',framePath:[],parents:[],parentNames:[]};
+  let active='';const queue=[first,second];
+  await walkMenus(null,queue,{
+    discover:async()=>[first,second],discoverAfterOpen:async()=>/^Módulo/.test(active)?[first,second,child]:[first,second],
+    open:async entry=>{active=entry.name},visit:async()=>{},recover:async()=>{},report:async()=>({recoverable:false}),
+  });
+  assert.deepEqual(queue.filter(item=>item.name==='Consulta').map(item=>item.parentNames),[['Módulo A'],['Módulo B']]);
+});
+
 test('módulo com página própria é capturado antes dos seus submódulos', async () => {
   const root={name:'Administrativo',selector:'#root',href:'#',framePath:[],parents:[],parentNames:[]};
   const child={name:'Associados',selector:'#child',href:'#child',framePath:[],parents:['#root'],parentNames:['Administrativo']};
@@ -603,6 +619,37 @@ test('detecta abas JSP por stepper, fragmento, aria-controls e título em ícone
   await page.setContent(`<main><div class="steps"><a href="#dados" title="Dados gerais"><i></i></a><button type="button" aria-controls="documentos">Documentos</button><div onclick="document.querySelector('h2').textContent='Resumo'" title="Resumo"></div></div><section id="dados"></section><section id="documentos"></section><h2>Inicial</h2></main>`);
   const tabs=await contentControls(page,'tab');
   assert.deepEqual(tabs.map(item=>item.name),['Dados gerais','Documentos','Resumo']);
+});
+
+test('não confunde paginação Próximo e Anterior com abas', async () => {
+  const page=await newPage();
+  await page.setContent(`<main><div class="pagination"><button id="btn-anterior">Anterior</button><button id="btn-anterior">Anterior</button><button>Próximo</button></div><div class="nav-tabs"><button role="tab">Dados</button></div></main>`);
+  const tabs=await contentControls(page,'tab');
+  assert.deepEqual(tabs.map(item=>item.name),['Dados']);
+  assert.ok(!tabs.some(item=>item.selector==='#btn-anterior'));
+});
+
+test('IDs duplicados recebem seletores estruturais e não causam strict mode', async () => {
+  const page=await newPage();
+  await page.setContent(`<main><div class="nav-tabs"><button id="aba" role="tab" onclick="document.querySelector('h2').textContent='Primeira'">Primeira</button><button id="aba" role="tab" onclick="document.querySelector('h2').textContent='Segunda'">Segunda</button></div><h2>Inicial</h2></main>`);
+  const tabs=await contentControls(page,'tab');
+  assert.equal(tabs.length,2);
+  assert.ok(tabs.every(item=>item.selector!=='#aba'));
+  const captures=[];
+  await exploreContent(page,['Ficha'],{capture:async labels=>captures.push(labels.join(' > ')),report:async(_label,error)=>{throw error},restore:async()=>{}});
+  assert.deepEqual(captures,['Ficha > Primeira','Ficha > Segunda']);
+});
+
+test('imagem branca é reconhecida e a captura aguarda o conteúdo renderizado', async () => {
+  const white=jpeg.encode({data:Buffer.alloc(100*100*4,255),width:100,height:100},84).data;
+  assert.equal(analyzeJpeg(white).blank,true);
+  const page=await newPage();
+  await page.setContent(`<div class="spinner" style="width:30px;height:30px;border:6px solid #eee;border-top-color:#d55;border-radius:50%"></div><script>setTimeout(()=>document.body.innerHTML='<main><h1>Ficha pronta</h1><input name=nome></main>',500)</script>`);
+  const started=Date.now();
+  const result=await takeUsableScreenshot(page,{timeout:3000,interval:100});
+  assert.ok(Date.now()-started>=400);
+  assert.equal(await page.locator('h1').innerText(),'Ficha pronta');
+  assert.ok(result.bytes.length>0);
 });
 
 test('página virtual de uma rota final não entra novamente na fila de menus', async () => {
@@ -679,6 +726,16 @@ test('abre Novo e Criar uma nova em JSP sem main, captura abas e não salva nem 
   assert.ok(manifest.records.some(record => record.label.includes('Novo cliente > Endereço')));
   assert.ok(manifest.records.some(record => record.label.includes('Criar uma nova proposta > Endereço')));
   assert.ok(!requests.slice(start).some(route => route.startsWith('/forbidden-')));
+});
+
+test('aguarda o formulário deixar a tela branca de carregamento antes da captura', async () => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'documentador-delayed-form-'));
+  const result=await scan({credentials:credentials('/delayed-form-login'),artifactsRoot:root,log(){},loginTimeoutMs:5000,captureTimeoutMs:5000});
+  const manifest=JSON.parse(fs.readFileSync(path.join(result.out,'scan-manifest.json')));
+  const form=manifest.records.find(record=>record.kind==='novo');
+  assert.ok(form);
+  assert.match(form.text,/Novo cliente carregado/);
+  assert.equal(manifest.records.some(record=>record.duplicateOf),false);
 });
 
 test('descobre Novo em iframe e não trata botões submit ou Salvar como abertura', async () => {

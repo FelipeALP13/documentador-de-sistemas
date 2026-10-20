@@ -7,6 +7,7 @@ const {waitForInterface}=require('./crawler-ui-state');
 const {walkMenus}=require('./crawler-navigation');
 const {exploreContent,pageSignature}=require('./crawler-content');
 const {attachNetworkMonitor}=require('./crawler-network');
+const {takeUsableScreenshot}=require('./crawler-image');
 function slug(s){return s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/gi,'_').replace(/^_|_$/g,'').slice(0,65)||'sem_nome'}
 async function main(options={}){
  const env=options.credentials||require('dotenv').parse(fs.readFileSync(path.join(__dirname,'.env')));
@@ -26,6 +27,23 @@ async function main(options={}){
  const withReadAction=async action=>{
   readActionDepth++;
   try{return await action()}finally{readActionDepth--}
+ };
+ const launchBrowser=()=>chromium.launch({
+  headless:true,
+  channel:options.browserChannel||process.env.DOCUMENTADOR_BROWSER_CHANNEL||'msedge',
+  args:['--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding'],
+ });
+ const discoverMenusSettled=async()=>{
+  const deadline=Date.now()+(options.menuSettleTimeoutMs||3000);
+  let previous='',stableSince=0,latest=[];
+  do{
+   latest=await ui.discoverMenus(page);
+   const signature=JSON.stringify(latest.map(item=>[item.framePath,item.parentNames,item.name,item.href,item.visible]));
+   if(signature!==previous){previous=signature;stableSince=Date.now()}
+   else if(Date.now()-stableSince>=650)return latest;
+   await page.waitForTimeout(150);
+  }while(Date.now()<deadline);
+  return latest;
  };
  const pageShowsLabel=async label=>{
   const expected=String(label||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
@@ -68,7 +86,7 @@ async function main(options={}){
   return {recoverable};
  }
  try{
-  browser=await chromium.launch({headless:true,channel:options.browserChannel||process.env.DOCUMENTADOR_BROWSER_CHANNEL||'msedge'});
+  browser=await launchBrowser();
   await createContextPage();
   await page.goto(env.SISTEMA_URL,{waitUntil:'domcontentloaded',timeout:45000});
   menu=await ui.login(page,env,options.loginTimeoutMs||30000);
@@ -109,7 +127,7 @@ async function main(options={}){
    log('Reiniciando a sessão temporária para recuperar a interface.');
    network?.dispose();network=null;
    await browser.close();
-   browser=await chromium.launch({headless:true,channel:options.browserChannel||process.env.DOCUMENTADOR_BROWSER_CHANNEL||'msedge'});
+   browser=await launchBrowser();
    authNavigation=null;allowAuthReplay=false;
    await createContextPage();
    readOnly=false;
@@ -130,25 +148,23 @@ async function main(options={}){
   async function capture(parts,kind,targetPage=page){
    const label=parts.join(' > ');
    await waitForInterface(targetPage,{...interfaceOptions,failureCheck:targetPage===page?interfaceOptions.failureCheck:undefined,allowForms:true});
-   let bytes;
-   for(let attempt=0;attempt<3&&!bytes;attempt++){
-    try{bytes=await targetPage.screenshot({type:'jpeg',quality:84,fullPage:false,timeout:15000})}
-    catch(error){if(attempt===2)throw error;await targetPage.waitForTimeout(350)}
-   }
+   const {bytes}=await takeUsableScreenshot(targetPage,{timeout:options.captureTimeoutMs||30000});
    const sha=crypto.createHash('sha256').update(bytes).digest('hex');
    const duplicate=hashes.get(sha);
+   if(duplicate){const error=new Error(`A tela ficou visualmente idêntica a ${duplicate}; nenhuma captura repetida foi gravada.`);error.code='SCREEN_DUPLICATE';error.recoverable=true;throw error}
    const rel=path.join(...parts.slice(0,2).map(p=>slug(redact(p))),`${kind}${parts.length>2?'_'+slug(redact(parts.slice(2).join('_'))):''}_${records.length+1}.jpg`);
-   if(!duplicate){const dest=path.join(out,rel);fs.mkdirSync(path.dirname(dest),{recursive:true});fs.writeFileSync(dest,bytes);hashes.set(sha,rel)}
+   const dest=path.join(out,rel);fs.mkdirSync(path.dirname(dest),{recursive:true});fs.writeFileSync(dest,bytes);hashes.set(sha,rel)
    const metadata=[];
    for(const frame of targetPage.frames()){
     if(frame.isDetached())continue;
     metadata.push(await frame.evaluate(()=>({text:(document.querySelector('main')||document.body)?.innerText||'',heading:[...document.querySelectorAll('h1,h2')].map(e=>e.textContent),tabs:[...document.querySelectorAll('[role="tab"]')].map(e=>e.textContent),buttons:[...document.querySelectorAll('button,input[type="submit"]')].map(e=>e.textContent||e.getAttribute('aria-label')||'')})).catch(()=>({text:'',heading:[],tabs:[],buttons:[]})));
    }
-   records.push({label,kind,image:duplicate||rel,duplicateOf:duplicate||null,heading:metadata.flatMap(m=>m.heading).slice(0,10),tabs:metadata.flatMap(m=>m.tabs),buttons:metadata.flatMap(m=>m.buttons).map(s=>s.trim()).filter(Boolean).slice(0,30),text:redact(metadata.map(m=>m.text).join('\n').slice(0,20000)),sha256:sha});
-   flush(menu);log(redact(`[${records.length}] ${label}${duplicate?' [igual a '+duplicate+']':''}`));
+   records.push({label,kind,image:rel,duplicateOf:null,heading:metadata.flatMap(m=>m.heading).slice(0,10),tabs:metadata.flatMap(m=>m.tabs),buttons:metadata.flatMap(m=>m.buttons).map(s=>s.trim()).filter(Boolean).slice(0,30),text:redact(metadata.map(m=>m.text).join('\n').slice(0,20000)),sha256:sha});
+   flush(menu);log(redact(`[${records.length}] ${label}`));
   }
   traversal=await walkMenus(page,menu,{
    maxMenus:options.maxMenus||1000,
+   discoverAfterOpen:discoverMenusSettled,
    open:async entry=>withReadAction(async()=>{
     const label=[...entry.parentNames||[],entry.name].join(' > '),before=await pageSignature(page),alreadyVisible=await pageShowsLabel(entry.name);
     const frame=ui.resolveFrame(page,entry.framePath);

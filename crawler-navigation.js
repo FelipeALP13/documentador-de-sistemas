@@ -2,7 +2,6 @@ const ui = require('./crawler-interface');
 // A position-based CSS selector can change after JSP re-renders the menu.
 const key = entry => JSON.stringify([entry.framePath, entry.parentNames || [], entry.name, entry.href]);
 const semanticKey = entry => JSON.stringify([entry.framePath, entry.parentNames || [], entry.name]);
-const nameKey = entry => JSON.stringify([entry.framePath, entry.name]);
 const findCurrent = (entries, entry) => entries.find(candidate => key(candidate) === key(entry))
   || entries.find(candidate => semanticKey(candidate) === semanticKey(entry))
   || entries.find(candidate => JSON.stringify(candidate.framePath) === JSON.stringify(entry.framePath) && candidate.name === entry.name);
@@ -14,12 +13,10 @@ const refreshEntry = (found, entry) => {
 };
 async function walkMenus(page, queue, {
   maxMenus = 1000, maxConsecutiveErrors = 3, discover = () => ui.discoverMenus(page),
-  open = entry => ui.openMenu(page, entry), visit, recover, report, onQueue = () => {}, onWarning = () => {}, onRetry = () => {},
+  discoverAfterOpen = discover, open = entry => ui.openMenu(page, entry), visit, recover, report, onQueue = () => {}, onWarning = () => {}, onRetry = () => {},
 }) {
   const known = new Set(queue.map(key));
   const knownSemantic = new Set(queue.map(semanticKey));
-  const seenCounts = new Map();
-  for(const entry of queue)seenCounts.set(nameKey(entry),(seenCounts.get(nameKey(entry))||0)+1);
   let attempted = 0, visited = 0, skipped = 0, consecutiveErrors = 0, failures = 0, interrupted = false;
   for (let index = 0; index < queue.length && attempted < maxMenus; index++) {
     const entry = queue[index];
@@ -39,27 +36,19 @@ async function walkMenus(page, queue, {
           await recover();
         }
       }
-      const discovered=[];
-      const groups=new Map();
-      for(const raw of await discover()){
-        if(raw.virtual)continue;
-        const group=groups.get(nameKey(raw))||[];group.push(raw);groups.set(nameKey(raw),group);
-      }
-      for(const [groupKey,items] of groups){
-        const previous=seenCounts.get(groupKey)||0;
-        seenCounts.set(groupKey,Math.max(previous,items.length));
-        for(const raw of items.slice(previous)){
-         const next=(raw.parentNames||[]).length?raw:{...raw,parents:[...(current.parents||[]),current.selector],parentNames:[...(current.parentNames||[]),current.name]};
-         discovered.push(next);
-        }
-      }
-      for (const next of discovered) {
+      for (const raw of await discoverAfterOpen()) {
         // A virtual start page is only an initial fallback for systems without
         // navigation. It must not become a queued menu after opening a leaf URL.
-        if (next.virtual) continue;
+        if (raw.virtual) continue;
+        if (known.has(key(raw)) || knownSemantic.has(semanticKey(raw))) continue;
+        // A portal can expose the currently visited child as a root after its
+        // parent dropdown closes. It is the same item, not a recursive child.
+        if (raw.name === current.name && raw.selector === current.selector
+          && JSON.stringify(raw.framePath) === JSON.stringify(current.framePath)) continue;
         // Menus rendered in a portal can appear as new roots after their group
         // opens. Attach them to the current branch without relying on a module
         // name; content actions are explored separately by crawler-content.
+        const next=(raw.parentNames||[]).length?raw:{...raw,parents:[...(current.parents||[]),current.selector],parentNames:[...(current.parentNames||[]),current.name]};
         if (!known.has(key(next))&&!knownSemantic.has(semanticKey(next))) {
           known.add(key(next));knownSemantic.add(semanticKey(next));queue.push(next);
         }

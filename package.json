@@ -1,6 +1,6 @@
 {
   "name": "documentador-de-sistemas",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "description": "Varredura segura e geração de documentação para sistemas web",
   "main": "desktop/main.js",
   "scripts": {
@@ -17,6 +17,7 @@
     "@google/generative-ai": "^0.24.1",
     "@playwright/test": "^1.63.0",
     "dotenv": "^18.0.4",
+    "jpeg-js": "^0.4.4",
     "playwright": "^1.63.0"
   },
   "devDependencies": {
@@ -28,7 +29,9 @@
     "productName": "Documentador de Sistemas",
     "asar": true,
     "electronDist": "node_modules/electron/dist",
-    "asarUnpack": ["node_modules/playwright-core/**"],
+    "asarUnpack": [
+      "node_modules/playwright-core/**"
+    ],
     "files": [
       "desktop/**/*",
       "varredura-completa.js",
@@ -36,6 +39,7 @@
       "crawler-ui-state.js",
       "crawler-navigation.js",
       "crawler-content.js",
+      "crawler-image.js",
       "crawler-network.js",
       "gerar-manual.js",
       "gemini-client.js",
@@ -45,8 +49,14 @@
       "!**/artifacts/**",
       "!**/estado-sessao.json"
     ],
-    "directories": { "output": "dist" },
-    "win": { "target": "portable" },
-    "portable": { "artifactName": "Documentador-de-Sistemas-${version}-portable.exe" }
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "portable"
+    },
+    "portable": {
+      "artifactName": "Documentador-de-Sistemas-${version}-portable.exe"
+    }
   }
 }

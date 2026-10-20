@@ -13,12 +13,15 @@ const controls = 'input,button,a,select,[role="button"],[role="link"],[role="men
 async function inspect(frame) {
   return frame.locator(controls).evaluateAll(elements => {
     const selector = el => {
-      if (el.id) return '#' + CSS.escape(el.id);
       const tag = el.tagName.toLowerCase();
       const unique = candidate => {
         try { return document.querySelectorAll(candidate).length === 1 ? candidate : null; }
         catch { return null; }
       };
+      if (el.id) {
+        const candidate = unique('#' + CSS.escape(el.id));
+        if (candidate) return candidate;
+      }
       // Prefer selectors that survive portal transitions and sibling removal.
       // Positional paths are retained only when no unique structural attribute
       // exists, which is common for repeated navigation items.

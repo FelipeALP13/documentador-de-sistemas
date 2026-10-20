@@ -63,7 +63,9 @@ const { _electron } = require('playwright');
     await window.waitForFunction(() => document.getElementById('status').textContent === 'Varredura parcial', null, { timeout: 90000 });
     const partialStatus = await window.locator('#status').innerText();
     assert.match(await window.locator('#log').innerText(), /2 capturas, 1 erros, 0 menus pendentes/);
-    await window.screenshot({ path: path.join(output, 'desktop.png') });
+    const screenshotPath = path.join(output, 'desktop.png');
+    try { await window.screenshot({ path: screenshotPath, timeout: 30000 }); }
+    catch { await window.waitForTimeout(500); await window.screenshot({ path: screenshotPath, timeout: 60000, animations: 'disabled' }); }
     const version = await app.evaluate(({ app }) => app.getVersion());
     const report = { version, packagedScan: scanResult, formsScan: formsResult, saveRequests, partialStatus, title: await window.title() };
     fs.writeFileSync(path.join(output, 'smoke-result.json'), JSON.stringify(report, null, 2));

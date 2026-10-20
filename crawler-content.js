@@ -10,11 +10,13 @@ async function pageSignature(page) {
   for (const frame of page.frames()) data.push(await frame.evaluate(() => {
     const root=document.querySelector('main,[role="main"],#content,#conteudo,.main-content,.content')||document.body;
     const copy=root?.cloneNode(true);
-    if(root===document.body)copy?.querySelectorAll('nav,header,aside,footer,[role="navigation"],script,style').forEach(element=>element.remove());
+    if(root===document.body)copy?.querySelectorAll('nav,header,aside,footer,[role="navigation"],.navbar,.sidebar,[id*="menu" i],[class*="menu" i],script,style').forEach(element=>element.remove());
     return {
-    url: location.href.split('#')[0], text: copy?.innerText || copy?.textContent || '',
+    url: location.hash.length>1?location.href:location.href.split('#')[0], text: copy?.textContent || '',
     fields: [...root.querySelectorAll('input,select,textarea,[role="dialog"]')].filter(el => el.getClientRects().length)
       .map(el => [el.tagName, el.getAttribute('type'), el.getAttribute('name')]),
+    selected: [...root.querySelectorAll('[role="tab"][aria-selected="true"],.nav-tabs .active,.nav-pills .active,.tabs .active,.steps .active,.stepper .active')]
+      .filter(el => el.getClientRects().length).map(el => (el.innerText || el.textContent || '').trim()),
   }}).catch(() => null));
   // Keep only a digest in memory; never persist field values or this DOM data.
   return require('node:crypto').createHash('sha256').update(JSON.stringify(data)).digest('hex');
@@ -28,7 +30,10 @@ async function controls(page, kind) {
       const activeDialog = [...document.querySelectorAll('[role="dialog"],[role="alertdialog"],.modal')].filter(visible)
         .sort((a, b) => (parseInt(getComputedStyle(a).zIndex) || 0) - (parseInt(getComputedStyle(b).zIndex) || 0)).at(-1);
       const selector = el => {
-        if (el.id) return '#' + CSS.escape(el.id);
+        if (el.id) {
+          const candidate = '#' + CSS.escape(el.id);
+          if (document.querySelectorAll(candidate).length === 1) return candidate;
+        }
         const parts = [];
         for (let node = el; node?.nodeType === 1; node = node.parentElement) {
           const siblings = node.parentElement ? [...node.parentElement.children].filter(e => e.tagName === node.tagName) : [node];
@@ -44,8 +49,9 @@ async function controls(page, kind) {
           const caption=(el.getAttribute('aria-label')||el.getAttribute('title')||fallback?.getAttribute('aria-label')||fallback?.getAttribute('title')||(el.tagName==='INPUT'?el.getAttribute('value'):el.innerText)||'').trim();
           const tabContainer=el.closest('[role="tablist"],.nav-tabs,.nav-pills,.tabs,.tabs-header,.tab-list,.tablist,.steps,.wizard-steps,.stepper,.step-navigation');
           const fragmentTarget=/^#[A-Za-z][\w:.-]*$/.test(href)&&document.querySelector(href);
-          const stepButton=/^(?:proximo|próximo|anterior|next|previous)$/i.test(caption.replace(/\s+/g,' ').trim());
-          const tab=el.matches('[role="tab"],[data-toggle="tab"],[data-bs-toggle="tab"],.nav-tabs a,.nav-pills a')||!!tabContainer||!!fragmentTarget||el.hasAttribute('aria-controls')||el.hasAttribute('data-target')||el.hasAttribute('data-bs-target')||stepButton;
+          const pager=/^(?:proximo|próximo|anterior|next|previous|avançar|voltar)$/i.test(caption.replace(/\s+/g,' ').trim())
+            ||!!el.closest('.pagination,.pager,[aria-label*="pagina" i],[aria-label*="pagination" i]');
+          const tab=!pager&&(el.matches('[role="tab"],[data-toggle="tab"],[data-bs-toggle="tab"],.nav-tabs a,.nav-pills a,[data-tab],[data-view],[data-panel]')||!!tabContainer||!!fragmentTarget||el.hasAttribute('aria-controls')||el.hasAttribute('data-target')||el.hasAttribute('data-bs-target'));
           return ({
           selector: selector(el),
           // Only static button captions; never read text/password input values.
@@ -85,7 +91,7 @@ async function activate(page, descriptor) {
   const found = (await controls(page, descriptor.kind)).find(item => normalize(item.name) === normalize(descriptor.name)
     && item.occurrence === descriptor.occurrence && JSON.stringify(item.framePath) === JSON.stringify(descriptor.framePath));
   if (!found) throw new Error(`Controle de navegação não reencontrado: ${descriptor.name}`);
-  const locator = ui.resolveFrame(page, found.framePath).locator(found.selector);
+  const locator = ui.resolveFrame(page, found.framePath).locator(found.selector).first();
   await ui.activateMenuControl(locator);
 }
 
@@ -163,18 +169,23 @@ async function exploreContent(page, parts, { capture, report, restore, interface
     const siblings = new Set([...ancestors, ...items.map(key)]);
     for (const tab of items) {
       if (ancestors.has(key(tab))) continue;
+      // The current page/form screenshot already represents the selected tab.
+      if (tab.selected) continue;
       try {
+        const before = await pageSignature(currentPage);
         onAction([...labels, tab.name].join(' > '));
         await runReadAction(async()=>{await activate(currentPage, tab);await waitOn(currentPage)});
+        const deadline=Date.now()+5000;
+        while((await pageSignature(currentPage))===before&&Date.now()<deadline)await currentPage.waitForTimeout(150);
+        if((await pageSignature(currentPage))===before)throw Object.assign(new Error('O controle de aba não alterou o conteúdo da tela; nenhuma captura repetida foi gravada.'),{code:'TAB_NOT_OPENED',recoverable:true});
         await capture([...labels, tab.name], 'aba', currentPage);
         const nextRoute = [...route, tab];
         if (allowNew) await forms([...labels, tab.name], nextRoute);
         if (depth < 3) await tabs([...labels, tab.name], nextRoute, siblings, depth + 1, allowNew, currentPage);
         else if ((await controls(currentPage, 'tab')).some(item => !siblings.has(key(item)))) throw new Error('Há abas adicionais além do limite de profundidade; cobertura incompleta.');
       } catch (error) {
-        if (!allowNew) throw error;
         await report([...labels, tab.name].join(' > '), error);
-        await restoreRoute(route);
+        if (allowNew) await restoreRoute(route);
       }
     }
   }

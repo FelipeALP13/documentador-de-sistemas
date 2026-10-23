@@ -29,9 +29,9 @@ async function main(options={}){
   try{return await action()}finally{readActionDepth--}
  };
  const launchBrowser=()=>chromium.launch({
-  headless:true,
+  headless:options.headless!==false,
   channel:options.browserChannel||process.env.DOCUMENTADOR_BROWSER_CHANNEL||'msedge',
-  args:['--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding'],
+  args:['--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding',...(options.headless===false?['--window-position=-32000,-32000','--window-size=1280,900']:[])],
  });
  const discoverMenusSettled=async()=>{
   const deadline=Date.now()+(options.menuSettleTimeoutMs||3000);
@@ -148,7 +148,8 @@ async function main(options={}){
   async function capture(parts,kind,targetPage=page){
    const label=parts.join(' > ');
    await waitForInterface(targetPage,{...interfaceOptions,failureCheck:targetPage===page?interfaceOptions.failureCheck:undefined,allowForms:true});
-   const {bytes}=await takeUsableScreenshot(targetPage,{timeout:options.captureTimeoutMs||30000});
+   const {bytes,recoveredLoading}=await takeUsableScreenshot(targetPage,{timeout:options.captureTimeoutMs||30000,staleLoaderMs:options.staleLoaderMs||4000});
+   if(recoveredLoading){const message=redact(`Camada de carregamento obsoleta removida temporariamente em ${label}.`);notices.push({message});log(message)}
    const sha=crypto.createHash('sha256').update(bytes).digest('hex');
    const duplicate=hashes.get(sha);
    if(duplicate){const error=new Error(`A tela ficou visualmente idêntica a ${duplicate}; nenhuma captura repetida foi gravada.`);error.code='SCREEN_DUPLICATE';error.recoverable=true;throw error}
@@ -179,7 +180,7 @@ async function main(options={}){
    visit:async entry=>{
     const parts=entry.parentNames?.length?[...entry.parentNames,entry.name]:[entry.name];
     await capture(parts,'geral');
-    await exploreContent(page,parts,{capture,report,interfaceOptions,runReadAction:withReadAction,onAction:label=>network.reset(label),isKnownScreen:name=>menu.some(item=>item.name===name),restore:async()=>{
+   await exploreContent(page,parts,{capture,report,interfaceOptions,runReadAction:withReadAction,onAction:label=>network.reset(label),isKnownScreen:name=>menu.some(item=>item.name===name),restore:async()=>{
      const findCurrent=async()=>(await ui.discoverMenus(page)).find(item=>item.name===entry.name&&JSON.stringify(item.parentNames)===JSON.stringify(entry.parentNames)&&JSON.stringify(item.framePath)===JSON.stringify(entry.framePath)&&(!entry.virtual||page.url().split('#')[0]===authenticatedUrl));
      network.reset(`retorno para ${parts.join(' > ')}`);
      let current=await findCurrent();

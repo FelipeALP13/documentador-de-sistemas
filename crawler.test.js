@@ -11,7 +11,7 @@ const { waitForInterface } = require('./crawler-ui-state');
 const { walkMenus } = require('./crawler-navigation');
 const { exploreContent, controls: contentControls } = require('./crawler-content');
 const { attachNetworkMonitor } = require('./crawler-network');
-const { analyzeJpeg, takeUsableScreenshot } = require('./crawler-image');
+const { analyzeJpeg, takeUsableScreenshot, restoreSuppressedLoading } = require('./crawler-image');
 const jpeg = require('jpeg-js');
 
 let server, base, browser, expireRequests = 0, spaLoginRequests = 0, spaFormLoginRequests = 0, opaqueWrites = 0, readPosts = 0, lateTreeRequests = 0;
@@ -79,6 +79,8 @@ before(async () => {
       '/delayed-menu-home': `<main>Carregando módulos</main><script>setTimeout(()=>{const nav=document.createElement('nav');const link=document.createElement('a');link.href='#';link.textContent='Módulo tardio';link.onclick=()=>document.querySelector('main').textContent='Módulo carregado';nav.append(link);document.body.prepend(nav)},2200)</script>`,
       '/delayed-form-login': modern.replace('/modern-home','/delayed-form-home'),
       '/delayed-form-home': `<nav><a href="#" onclick="openList()">Cadastros</a></nav><main>Início</main><script>function openList(){document.querySelector('main').innerHTML='<h1>Clientes</h1><button type=button onclick=openForm()>Novo cliente</button>'}function openForm(){document.body.insertAdjacentHTML('beforeend','<div class=loading-overlay style=position:fixed;inset:0;background:white;z-index:99><div class=spinner style=margin:70px;width:70px;height:70px;border:12px solid #eee;border-top-color:#d55;border-radius:50%></div></div>');setTimeout(()=>{document.querySelector('.loading-overlay').remove();document.querySelector('main').innerHTML='<h1>Novo cliente carregado</h1><form><input name=nome><button type=submit>Salvar</button></form>'},900)}</script>`,
+      '/stale-form-login': modern.replace('/modern-home','/stale-form-home'),
+      '/stale-form-home': `<nav><a href="#" onclick="openList()">Cadastros</a></nav><main>Início</main><script>function openList(){document.querySelector('main').innerHTML='<h1>Clientes</h1><button type=button onclick=openForm()>Novo cliente</button>'}function openTab(){document.querySelector('h2').textContent='Endereços'}function openForm(){document.querySelector('main').innerHTML='<h1>Novo cliente pronto</h1><form><input name=nome><button type=button data-toggle=tab onclick=openTab()>Endereço</button><h2>Dados gerais</h2><button type=submit>Salvar</button></form>';document.body.insertAdjacentHTML('beforeend','<div class=screen-mask style=position:fixed;inset:0;background:white;z-index:99><div class=adornment></div></div>')}</script>`,
       '/late-tree-login': modern.replace('/modern-home','/late-tree-home'),
       '/late-tree-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Dashboard carregado'">Dashboard</a></nav><main>Início</main><script>setTimeout(()=>fetch('/late-tree-data',{method:'POST'}).then(response=>response.text()).then(html=>document.querySelector('nav').insertAdjacentHTML('beforeend',html)),700)</script>`,
       '/alert-login': modern.replace('/modern-home','/alert-home'),
@@ -652,6 +654,17 @@ test('imagem branca é reconhecida e a captura aguarda o conteúdo renderizado',
   assert.ok(result.bytes.length>0);
 });
 
+test('carregador branco obsoleto é ocultado só durante a exploração e depois restaurado', async () => {
+  const page=await newPage();
+  await page.setContent(`<main style="min-height:700px;background:#174ea6;color:white"><h1>Novo cadastro</h1><form><label>Nome<input name="nome"></label><button type="button">Dados adicionais</button></form></main><div class="loading-overlay" style="position:fixed;inset:0;background:white;z-index:100"><div class="spinner"></div></div>`);
+  const result=await takeUsableScreenshot(page,{timeout:3000,interval:50,staleLoaderMs:100});
+  assert.equal(result.recoveredLoading,true);
+  assert.equal(await page.locator('.loading-overlay').evaluate(element=>getComputedStyle(element).visibility),'hidden');
+  assert.equal(analyzeJpeg(result.bytes).blank,false);
+  await restoreSuppressedLoading(page);
+  assert.equal(await page.locator('.loading-overlay').evaluate(element=>getComputedStyle(element).visibility),'visible');
+});
+
 test('página virtual de uma rota final não entra novamente na fila de menus', async () => {
   const entry = menuEntries(1)[0];
   const virtual = { ...entry, name: 'Página inicial', selector: 'body', virtual: true };
@@ -736,6 +749,18 @@ test('aguarda o formulário deixar a tela branca de carregamento antes da captur
   assert.ok(form);
   assert.match(form.text,/Novo cliente carregado/);
   assert.equal(manifest.records.some(record=>record.duplicateOf),false);
+});
+
+test('remove carregamento branco obsoleto, captura o formulário e percorre suas abas', async () => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'documentador-stale-form-'));
+  const result=await scan({credentials:credentials('/stale-form-login'),artifactsRoot:root,log(){},loginTimeoutMs:5000,captureTimeoutMs:5000,staleLoaderMs:100});
+  const manifest=JSON.parse(fs.readFileSync(path.join(result.out,'scan-manifest.json')));
+  assert.equal(result.errors,0);
+  assert.equal(result.status,'complete');
+  assert.ok(manifest.records.some(record=>record.kind==='novo'&&record.text.includes('Novo cliente pronto')));
+  assert.ok(manifest.records.some(record=>record.kind==='aba'&&record.label.endsWith('Endereço')));
+  assert.ok(manifest.notices.some(item=>item.message.includes('Camada de carregamento obsoleta')));
+  assert.ok(!requests.some(route=>route.includes('forbidden-save')));
 });
 
 test('descobre Novo em iframe e não trata botões submit ou Salvar como abertura', async () => {

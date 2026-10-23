@@ -90,6 +90,7 @@ app.whenReady().then(() => {
       credentials: { SISTEMA_URL: url.toString(), SISTEMA_USER: user, SISTEMA_PASS: password },
       artifactsRoot: root,
       browserChannel: input.browser === 'chrome' ? 'chrome' : 'msedge',
+      headless: false,
       log: sendLog,
     });
     return result;

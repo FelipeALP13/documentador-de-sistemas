@@ -83,7 +83,67 @@ async function hasMeaningfulContent(page) {
   return false;
 }
 
-async function takeUsableScreenshot(page, { timeout = 30000, interval = 500 } = {}) {
+async function suppressStaleLoading(page) {
+  let hidden = 0;
+  for (const frame of page.frames()) {
+    hidden += await frame.evaluate(() => {
+      if (window.__documentadorSuppressedLoading?.length) return window.__documentadorSuppressedLoading.length;
+      const visible = element => {
+        const style = getComputedStyle(element);
+        return !!element.getClientRects().length && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+      };
+      const area = element => {
+        const rect = element.getBoundingClientRect();
+        return rect.width * rect.height;
+      };
+      const viewportArea = Math.max(1, innerWidth * innerHeight);
+      const interactive = 'input,select,textarea,button,a[href],[role="button"],[role="dialog"],[role="alertdialog"]';
+      const loadingName = element => /load|loading|loader|spinner|preload|aguarde|processando|blockui|block-overlay|busy/i
+        .test(`${element.id} ${element.className} ${element.getAttribute('aria-label') || ''} ${element.getAttribute('aria-busy') || ''}`);
+      const candidates = new Set([...document.querySelectorAll('[class*="load" i],[class*="spinner" i],[class*="blockui" i],[aria-busy="true"],[role="progressbar"]')]);
+      const meaningful = [...document.querySelectorAll('main input:not([type="hidden"]),main select,main textarea,main button,form input:not([type="hidden"]),form select,form textarea,form button')]
+        .filter(visible).slice(0, 40);
+      for (const control of meaningful) {
+        const rect = control.getBoundingClientRect();
+        const top = document.elementFromPoint(Math.min(innerWidth - 1, Math.max(0, rect.left + rect.width / 2)), Math.min(innerHeight - 1, Math.max(0, rect.top + rect.height / 2)));
+        if (!top || top === control || control.contains(top)) continue;
+        for (let node = top; node && node !== document.body; node = node.parentElement) {
+          const style = getComputedStyle(node);
+          if (['fixed', 'absolute'].includes(style.position) && area(node) >= viewportArea * 0.65) {
+            candidates.add(node);
+            break;
+          }
+        }
+      }
+      const safe = [...candidates].filter(element => {
+        if (!visible(element) || element.matches('[role="dialog"],[role="alertdialog"],.modal') || element.closest('[role="dialog"],[role="alertdialog"],.modal')) return false;
+        const style = getComputedStyle(element);
+        const large = ['fixed', 'absolute'].includes(style.position) && area(element) >= viewportArea * 0.65;
+        if (!large || element.querySelector(interactive)) return false;
+        const text = (element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
+        return loadingName(element) || !text || /^(?:carregando|loading|aguarde|processando)(?:\.{0,3})?$/i.test(text);
+      }).filter(element => ![...candidates].some(other => other !== element && other.contains(element)));
+      window.__documentadorSuppressedLoading = safe.map(element => ({ element, style: element.getAttribute('style') }));
+      for (const { element } of window.__documentadorSuppressedLoading) element.style.setProperty('visibility', 'hidden', 'important');
+      return safe.length;
+    }).catch(() => 0);
+  }
+  return hidden;
+}
+
+async function restoreSuppressedLoading(page) {
+  for (const frame of page?.frames() || []) await frame.evaluate(() => {
+    for (const item of window.__documentadorSuppressedLoading || []) {
+      if (!item.element?.isConnected) continue;
+      if (item.style === null) item.element.removeAttribute('style');
+      else item.element.setAttribute('style', item.style);
+    }
+    delete window.__documentadorSuppressedLoading;
+  }).catch(() => {});
+}
+
+async function takeUsableScreenshot(page, { timeout = 30000, interval = 500, staleLoaderMs = 4000 } = {}) {
+  const startedAt = Date.now();
   const deadline = Date.now() + timeout;
   let lastMetrics = null;
   let lastError = null;
@@ -94,6 +154,13 @@ async function takeUsableScreenshot(page, { timeout = 30000, interval = 500 } = 
       const metrics = analyzeJpeg(bytes);
       if (!metrics.blank || await hasMeaningfulContent(page)) return { bytes, metrics };
       lastMetrics = metrics;
+      if (Date.now() - startedAt >= staleLoaderMs && await suppressStaleLoading(page)) {
+        await renderFrame(page);
+        const recoveredBytes = await page.screenshot({ type: 'jpeg', quality: 84, fullPage: false, timeout: Math.min(15000, Math.max(1000, deadline - Date.now())) });
+        const recoveredMetrics = analyzeJpeg(recoveredBytes);
+        if (!recoveredMetrics.blank || await hasMeaningfulContent(page)) return { bytes: recoveredBytes, metrics: recoveredMetrics, recoveredLoading: true };
+        await restoreSuppressedLoading(page);
+      }
     } catch (error) {
       lastError = error;
     }
@@ -106,7 +173,8 @@ async function takeUsableScreenshot(page, { timeout = 30000, interval = 500 } = 
     error.recoverable = true;
     throw error;
   }
+  await restoreSuppressedLoading(page);
   throw lastError || new Error('Não foi possível gerar uma captura da tela.');
 }
 
-module.exports = { analyzeJpeg, hasMeaningfulContent, takeUsableScreenshot };
+module.exports = { analyzeJpeg, hasMeaningfulContent, suppressStaleLoading, restoreSuppressedLoading, takeUsableScreenshot };

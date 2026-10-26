@@ -4,6 +4,7 @@ const { waitForInterface } = require('./crawler-ui-state');
 const normalize = text => String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 const opening = /^(?:nov[oa](?:\s|$)|criar (?:um |uma )?nov[oa](?:\s|$)|adicionar(?:\s|$)|cadastrar(?:\s|$)|incluir(?:\s|$)|novo cadastro(?:\s|$))/;
 const dangerous = /\b(salvar|gravar|excluir|deletar|remover|enviar|submeter|confirmar|finalizar|publicar|pagar|aprovar|reprovar|bloquear|desativar|inativar)\b/;
+const transientLoaderNavigation = url => /(?:^|\/)(?:loader|loading|preload|aguarde|processando)[^/?#]*\.(?:svg|gif|png|html?|jsp)(?:[?#]|$)/i.test(String(url || ''));
 
 async function pageSignature(page) {
   const data = [];
@@ -124,6 +125,10 @@ async function activateForm(page, descriptor) {
   const intercept = async route => {
     const request = route.request();
     if (request.isNavigationRequest() && request.url().split('#')[0] !== page.url().split('#')[0]) {
+      // Sistemas JSP antigos podem navegar um iframe para uma imagem/tela de
+      // carregamento antes de apontá-lo para o formulário real. Deixe essa
+      // etapa intermediária terminar e continue aguardando a próxima navegação.
+      if (transientLoaderNavigation(request.url())) return route.fallback();
       navigation = { url: request.url(), method: request.method().toUpperCase() };
       return route.abort();
     }
@@ -133,7 +138,7 @@ async function activateForm(page, descriptor) {
   await page.route('**/*', intercept);
   try {
     await activate(page, descriptor).catch(error => { if (!navigation) throw error; });
-    for(let attempt=0;attempt<15&&!navigation&&!popup;attempt++)await page.waitForTimeout(100);
+    for(let attempt=0;attempt<50&&!navigation&&!popup;attempt++)await page.waitForTimeout(100);
   } finally {
     await page.unroute('**/*', intercept);
     context.off('page', onPage);
@@ -240,4 +245,4 @@ async function exploreContent(page, parts, { capture, report, restore, interface
   await screens(parts, []);
 }
 
-module.exports = { exploreContent, controls, activate, pageSignature };
+module.exports = { exploreContent, controls, activate, pageSignature, transientLoaderNavigation };

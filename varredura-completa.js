@@ -9,6 +9,26 @@ const {exploreContent,pageSignature}=require('./crawler-content');
 const {attachNetworkMonitor}=require('./crawler-network');
 const {takeUsableScreenshot}=require('./crawler-image');
 function slug(s){return s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/gi,'_').replace(/^_|_$/g,'').slice(0,65)||'sem_nome'}
+function browserLaunchOptions(options={}){
+ const visible=options.headless===false;
+ return {
+  headless:!visible,
+  channel:options.browserChannel||process.env.DOCUMENTADOR_BROWSER_CHANNEL||'chrome',
+  args:['--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding',...(visible?['--start-maximized','--window-position=0,0']:[])],
+ };
+}
+function browserContextOptions(options={}){
+ return options.headless===false
+  ? {viewport:null,serviceWorkers:'block'}
+  : {viewport:{width:1280,height:900},deviceScaleFactor:1,serviceWorkers:'block'};
+}
+async function maximizePageWindow(page){
+ const session=await page.context().newCDPSession(page);
+ try{
+  const {windowId}=await session.send('Browser.getWindowForTarget');
+  await session.send('Browser.setWindowBounds',{windowId,bounds:{windowState:'maximized'}});
+ }finally{await session.detach()}
+}
 async function main(options={}){
  const env=options.credentials||require('dotenv').parse(fs.readFileSync(path.join(__dirname,'.env')));
  const root=options.artifactsRoot||path.join(__dirname,'artifacts');
@@ -28,11 +48,7 @@ async function main(options={}){
   readActionDepth++;
   try{return await action()}finally{readActionDepth--}
  };
- const launchBrowser=()=>chromium.launch({
-  headless:options.headless!==false,
-  channel:options.browserChannel||process.env.DOCUMENTADOR_BROWSER_CHANNEL||'msedge',
-  args:['--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding',...(options.headless===false?['--window-position=-32000,-32000','--window-size=1280,900']:[])],
- });
+ const launchBrowser=()=>chromium.launch(browserLaunchOptions(options));
  const discoverMenusSettled=async()=>{
   const deadline=Date.now()+(options.menuSettleTimeoutMs||3000);
   let previous='',stableSince=0,latest=[];
@@ -72,9 +88,10 @@ async function main(options={}){
   return settle(route.continue());
  };
  const createContextPage=async()=>{
-  context=await browser.newContext({viewport:{width:1280,height:900},deviceScaleFactor:1,serviceWorkers:'block'});
+  context=await browser.newContext(browserContextOptions(options));
   await context.route('**/*',handleRequest);
   page=await context.newPage();page.setDefaultTimeout(5000);
+  if(options.headless===false)await maximizePageWindow(page);
   page.on('dialog',dialog=>dialog.dismiss().catch(()=>{}));
  };
  async function report(label,e){
@@ -199,4 +216,4 @@ async function main(options={}){
  return {out,run,status,complete:status==='complete',records:records.length,errors:errors.length,pending:traversal?.pending.length||0,warnings};
 }
 if(require.main===module)main().catch(e=>{console.error('Falha:',e.message);process.exitCode=1});
-module.exports={main,slug};
+module.exports={main,slug,browserLaunchOptions,browserContextOptions,maximizePageWindow};

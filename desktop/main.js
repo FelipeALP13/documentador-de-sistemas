@@ -85,11 +85,11 @@ app.whenReady().then(() => {
     if (!user || !password) throw new Error('Informe o usuário/e-mail e a senha do sistema.');
     const root = artifactsRoot(input.folder);
     fs.mkdirSync(root, { recursive: true });
-    sendLog('Iniciando varredura. O navegador será aberto em segundo plano.');
+    sendLog('Iniciando varredura. O navegador será aberto visível e maximizado.');
     const result = await scan({
       credentials: { SISTEMA_URL: url.toString(), SISTEMA_USER: user, SISTEMA_PASS: password },
       artifactsRoot: root,
-      browserChannel: input.browser === 'chrome' ? 'chrome' : 'msedge',
+      browserChannel: input.browser === 'msedge' ? 'msedge' : 'chrome',
       headless: false,
       log: sendLog,
     });

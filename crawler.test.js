@@ -6,10 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const ui = require('./crawler-interface');
-const { main: scan } = require('./varredura-completa');
+const { main: scan, browserLaunchOptions, browserContextOptions, maximizePageWindow } = require('./varredura-completa');
 const { waitForInterface } = require('./crawler-ui-state');
 const { walkMenus } = require('./crawler-navigation');
-const { exploreContent, controls: contentControls } = require('./crawler-content');
+const { exploreContent, controls: contentControls, transientLoaderNavigation } = require('./crawler-content');
 const { attachNetworkMonitor } = require('./crawler-network');
 const { analyzeJpeg, takeUsableScreenshot, restoreSuppressedLoading } = require('./crawler-image');
 const jpeg = require('jpeg-js');
@@ -81,6 +81,10 @@ before(async () => {
       '/delayed-form-home': `<nav><a href="#" onclick="openList()">Cadastros</a></nav><main>Início</main><script>function openList(){document.querySelector('main').innerHTML='<h1>Clientes</h1><button type=button onclick=openForm()>Novo cliente</button>'}function openForm(){document.body.insertAdjacentHTML('beforeend','<div class=loading-overlay style=position:fixed;inset:0;background:white;z-index:99><div class=spinner style=margin:70px;width:70px;height:70px;border:12px solid #eee;border-top-color:#d55;border-radius:50%></div></div>');setTimeout(()=>{document.querySelector('.loading-overlay').remove();document.querySelector('main').innerHTML='<h1>Novo cliente carregado</h1><form><input name=nome><button type=submit>Salvar</button></form>'},900)}</script>`,
       '/stale-form-login': modern.replace('/modern-home','/stale-form-home'),
       '/stale-form-home': `<nav><a href="#" onclick="openList()">Cadastros</a></nav><main>Início</main><script>function openList(){document.querySelector('main').innerHTML='<h1>Clientes</h1><button type=button onclick=openForm()>Novo cliente</button>'}function openTab(){document.querySelector('h2').textContent='Endereços'}function openForm(){document.querySelector('main').innerHTML='<h1>Novo cliente pronto</h1><form><input name=nome><button type=button data-toggle=tab onclick=openTab()>Endereço</button><h2>Dados gerais</h2><button type=submit>Salvar</button></form>';document.body.insertAdjacentHTML('beforeend','<div class=screen-mask style=position:fixed;inset:0;background:white;z-index:99><div class=adornment></div></div>')}</script>`,
+      '/loader-navigation-home': `<main><h1>Clientes</h1></main><iframe src="/loader-navigation-frame"></iframe><script>function openForm(frame){frame.src='/img/loader_base.svg';setTimeout(()=>frame.src='/loader-navigation-form',200)}</script>`,
+      '/loader-navigation-frame': `<button type="button" onclick="parent.openForm(window.frameElement)">Novo cliente</button>`,
+      '/img/loader_base.svg': `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="white"/></svg>`,
+      '/loader-navigation-form': `<main><h1>Novo cliente carregado após o loader</h1><form><label>Nome<input name="nome"></label><button type="submit">Salvar</button></form></main>`,
       '/late-tree-login': modern.replace('/modern-home','/late-tree-home'),
       '/late-tree-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Dashboard carregado'">Dashboard</a></nav><main>Início</main><script>setTimeout(()=>fetch('/late-tree-data',{method:'POST'}).then(response=>response.text()).then(html=>document.querySelector('nav').insertAdjacentHTML('beforeend',html)),700)</script>`,
       '/alert-login': modern.replace('/modern-home','/alert-home'),
@@ -120,7 +124,8 @@ before(async () => {
 });
 async function newPage() {
   browser ||= await chromium.launch({ channel: 'msedge', headless: true });
-  return browser.newPage();
+  const context = await browser.newContext();
+  return context.newPage();
 }
 afterEach(async () => { await browser?.close(); browser = null; });
 after(async () => { await browser?.close(); await new Promise(resolve => server.close(resolve)); });
@@ -761,6 +766,45 @@ test('remove carregamento branco obsoleto, captura o formulário e percorre suas
   assert.ok(manifest.records.some(record=>record.kind==='aba'&&record.label.endsWith('Endereço')));
   assert.ok(manifest.notices.some(item=>item.message.includes('Camada de carregamento obsoleta')));
   assert.ok(!requests.some(route=>route.includes('forbidden-save')));
+});
+
+test('aguarda o destino real depois de uma navegação intermediária para loader', async () => {
+  assert.equal(transientLoaderNavigation(base + '/img/loader_base.svg'), true);
+  assert.equal(transientLoaderNavigation(base + '/cadastro/novo.jsp'), false);
+  const page = await newPage();
+  await page.goto(base + '/loader-navigation-home');
+  const captures = [];
+  await exploreContent(page, ['Clientes'], {
+    capture: async (labels, kind, target) => captures.push({ labels, kind, url: target.url(), text: await target.locator('body').innerText() }),
+    report: async (_label, error) => { throw error; },
+    restore: async () => {},
+  });
+  const form = captures.find(item => item.kind === 'novo');
+  assert.ok(form);
+  assert.match(form.url, /loader-navigation-form$/);
+  assert.match(form.text, /Novo cliente carregado após o loader/);
+  assert.ok(requests.includes('/img/loader_base.svg'));
+});
+
+test('navegador visível usa a janela real maximizada e Chrome por padrão', async () => {
+  const launch = browserLaunchOptions({ headless: false });
+  const context = browserContextOptions({ headless: false });
+  assert.equal(launch.channel, 'chrome');
+  assert.equal(launch.headless, false);
+  assert.ok(launch.args.includes('--start-maximized'));
+  assert.ok(!launch.args.some(argument => argument.includes('-32000')));
+  assert.equal(context.viewport, null);
+  const calls = [];
+  const session = {
+    async send(method, params) { calls.push({ method, params }); return method === 'Browser.getWindowForTarget' ? { windowId: 7 } : {}; },
+    async detach() { calls.push({ method: 'detach' }); },
+  };
+  await maximizePageWindow({ context: () => ({ newCDPSession: async () => session }) });
+  assert.deepEqual(calls, [
+    { method: 'Browser.getWindowForTarget', params: undefined },
+    { method: 'Browser.setWindowBounds', params: { windowId: 7, bounds: { windowState: 'maximized' } } },
+    { method: 'detach' },
+  ]);
 });
 
 test('descobre Novo em iframe e não trata botões submit ou Salvar como abertura', async () => {

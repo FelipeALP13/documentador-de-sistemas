@@ -102,13 +102,15 @@ before(async () => {
       '/header-home': `<header><ul><li><a href="#" onclick="this.nextElementSibling.hidden=false">BI</a><ul hidden><li><a href="#" onclick="document.querySelector('main').textContent='Painel SGE'">Painel</a></li></ul></li><li><a href="#" onclick="this.nextElementSibling.hidden=false">Financeiro</a><ul hidden><li><a href="#" onclick="document.querySelector('main').textContent='Lançamentos SGE'">Lançamentos</a></li></ul></li></ul></header><main>Início</main>`,
       '/script-login': modern.replace('/modern-home','/script-home'),
       '/script-home': `<nav><a href="#" onclick="document.querySelector('main').textContent='Tela disponível';document.querySelector('inexistente').valor=1">Relatório</a></nav><main>Início</main>`,
+      '/noop-login': modern.replace('/modern-home','/noop-home'),
+      '/noop-home': `<nav><a href="#" onclick="document.querySelector('main').innerHTML='<h1>Cadastros</h1><button type=button>Novo</button>'">Cadastros</a></nav><main>Início</main>`,
       '/settings-field-login': modern.replace('/modern-home','/settings-field-home'),
       '/settings-field-home': `<nav><a href="#" onclick="document.querySelector('main').hidden=false">Configuração</a></nav><main hidden><form><label>Conta<input name="account"></label><button type="button">Salvar</button></form></main>`,
       '/reauth-login': `<form action="/reauth-home" method="post"><input name="usuario_login"><input type="password" name="senha_login"><button type="submit">Entrar</button></form>`,
       '/forms-login': modern.replace('/modern-home','/forms-home'),
       '/forms-home': `<nav><a href="/forms-home">Cadastros</a></nav><div id="content"><h1>Lista de cadastros</h1><input type="button" value="Novo cliente" onclick="openForm('Cliente')"><a href="#" onclick="openForm('Proposta')">Criar uma nova proposta</a></div><template id="ficha"><div role="dialog"><h1>Ficha</h1><form action="/forbidden-save" method="post"><input name="nome"><button type="submit">Salvar</button><button type="button" onclick="fetch('/forbidden-delete')">Excluir</button><a href="#" data-toggle="tab" onclick="document.querySelector('h2').textContent='Dados gerais'">Geral</a><a href="#" data-toggle="tab" onclick="document.querySelector('h2').textContent='Endereços'">Endereço</a><h2>Dados gerais</h2></form></div></template><script>function openForm(name){const target=document.getElementById('content');target.replaceChildren(document.getElementById('ficha').content.cloneNode(true));target.querySelector('h1').textContent=name}</script>`,
       '/http-login': modern.replace('/modern-home','/http-home'),
-      '/http-home': `<nav><a href="#" onclick="document.body.insertAdjacentHTML('beforeend','<div class=blockOverlay style=position:fixed;inset:0></div>');fetch('/missing.jsp?token=nao-registrar')">Solicitado</a><a href="/http-good">Consulta</a></nav><main>Início</main>`,
+      '/http-home': `<nav><a href="#" onclick="fetch('/missing.jsp?token=nao-registrar')">Solicitado</a><a href="/http-good">Consulta</a></nav><main>Início</main>`,
       '/http-good': `<main>Consulta disponível</main>`,
       '/mutation-login': modern.replace('/modern-home','/mutation-home'),
       '/mutation-home': `<nav><a href="#" onclick="fetch('/opaque-write',{method:'POST',body:'registro=1'}).catch(()=>{});document.querySelector('main').textContent='Consulta aberta'">Consulta</a></nav><main>Início</main>`,
@@ -309,14 +311,27 @@ test('retorno de Novo reutiliza o menu lateral sem recarregar a SPA autenticada'
   assert.equal(spaFormLoginRequests, 1);
 });
 
-test('erro JavaScript interno vira aviso e a tela ainda é capturada', async () => {
+test('erro JavaScript interno vira observação e a tela ainda é capturada sem aviso', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-script-'));
   const result = await scan({ credentials: credentials('/script-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 4000 });
   const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
   assert.equal(result.status, 'complete');
   assert.equal(result.errors, 0);
   assert.ok(manifest.records.some(record => record.label === 'Relatório' && record.text.includes('Tela disponível')));
-  assert.ok(manifest.warnings.some(warning => warning.code === 'PAGE_SCRIPT_ERROR'));
+  assert.equal(manifest.warnings.length, 0);
+  assert.ok(manifest.notices.some(notice => notice.code === 'PAGE_SCRIPT_ERROR'));
+});
+
+test('controle sem efeito vira observação auditável sem reduzir a cobertura', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-noop-'));
+  const result = await scan({ credentials: credentials('/noop-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 4000 });
+  const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
+  assert.equal(result.status, 'complete');
+  assert.equal(result.errors, 0);
+  assert.equal(manifest.warnings.length, 0);
+  const notice = manifest.notices.find(item => item.code === 'FORM_NOT_OPENED');
+  assert.ok(notice);
+  assert.ok(notice.diagnostic);
 });
 
 test('campo de conta em tela autenticada não é confundido com login', async () => {
@@ -824,21 +839,21 @@ test('descobre Novo em iframe e não trata botões submit ou Salvar como abertur
   assert.equal(await frame.locator('[role=dialog]').count(), 0);
 });
 
-test('404 real vira aviso com diagnóstico sem query e não impede as próximas telas', async () => {
+test('404 de XHR auxiliar não vira aviso e permanece auditável no diagnóstico', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'documentador-http-'));
   const start = requests.length;
   const result = await scan({ credentials: credentials('/http-login'), artifactsRoot: root, log() {}, loginTimeoutMs: 5000, interfaceTimeoutMs: 5000 });
   const manifest = JSON.parse(fs.readFileSync(path.join(result.out, 'scan-manifest.json')));
   assert.equal(result.status, 'complete');
   assert.equal(result.errors, 0);
-  assert.equal(requests.slice(start).filter(route => route === '/missing.jsp').length, 1);
+  assert.ok(requests.slice(start).filter(route => route === '/missing.jsp').length >= 1);
   assert.ok(manifest.records.some(record => record.text.includes('Consulta disponível')));
-  const warning = manifest.warnings.find(item => item.code === 'HTTP_404');
-  const diagnostic = JSON.parse(fs.readFileSync(path.join(result.out, warning.diagnostic)));
-  assert.equal(diagnostic.code, 'HTTP_404');
+  assert.equal(manifest.warnings.length, 0);
+  const notice = manifest.notices.find(item => item.code === 'SCREEN_NOT_OPENED');
+  const diagnostic = JSON.parse(fs.readFileSync(path.join(result.out, notice.diagnostic)));
+  assert.equal(diagnostic.code, 'SCREEN_NOT_OPENED');
   assert.equal(diagnostic.network[0].status, 404);
   assert.ok(!JSON.stringify(diagnostic).includes('nao-registrar'));
-  assert.match(warning.error, /HTTP 404/);
 });
 
 test('modo somente leitura permite POST neutro da navegação e bloqueia ações perigosas', async () => {
@@ -879,6 +894,7 @@ test('monitor ignora credenciais de login e descarta erros da ação anterior', 
   network.reset();
   await page.evaluate(() => fetch('/missing.jsp?token=privado'));
   assert.equal(network.failure().code, 'HTTP_404');
+  assert.equal(network.failure({ documentOnly: true }), null);
   assert.ok(!JSON.stringify(network.snapshot()).includes('privado'));
   network.reset();
   assert.equal(network.failure(), null);

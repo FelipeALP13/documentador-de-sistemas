@@ -8,6 +8,7 @@ const {walkMenus}=require('./crawler-navigation');
 const {exploreContent,pageSignature}=require('./crawler-content');
 const {attachNetworkMonitor}=require('./crawler-network');
 const {takeUsableScreenshot}=require('./crawler-image');
+const informationalDiagnosticCodes=new Set(['SCREEN_NOT_OPENED','FORM_NOT_OPENED','TAB_NOT_OPENED','SCREEN_DUPLICATE']);
 function slug(s){return s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/gi,'_').replace(/^_|_$/g,'').slice(0,65)||'sem_nome'}
 function browserLaunchOptions(options={}){
  const visible=options.headless===false;
@@ -69,7 +70,7 @@ async function main(options={}){
   }
   return false;
  };
- const interfaceOptions={timeout:options.interfaceTimeoutMs||30000,allowBlocked:true,failureCheck:()=>network?.failure(),onNotice:message=>{notices.push({message});log(message)}};
+ const interfaceOptions={timeout:options.interfaceTimeoutMs||30000,allowBlocked:true,failureCheck:()=>network?.failure({documentOnly:true}),onNotice:message=>{notices.push({message});log(message)}};
  const handleRequest=route=>{
   const settle=promise=>promise.catch(error=>{if(!/Route is already handled/i.test(error.message))throw error});
   const request=route.request(),method=request.method().toUpperCase();
@@ -98,9 +99,11 @@ async function main(options={}){
   const file=await ui.writeDiagnostic(page,out,e,secrets,env.SISTEMA_URL);
   const recoverable=!!e.recoverable||/^HTTP_(?:\d+|5XX)$/.test(e.code||'')||e.code==='NETWORK_FAILURE';
   const item={label:redact(label),error:redact(e.message.split('\n')[0]).replace(/https?:\/\/[^\s"']+/g,u=>ui.safeUrl(u,redact)),diagnostic:path.basename(file),code:e.code||null};
-  (recoverable?warnings:errors).push(item);
-  flush(menu);log(`${recoverable?'Aviso':'Falha'} em ${item.label}: ${item.error}`);log('Diagnóstico:',file);
-  return {recoverable};
+  const informational=informationalDiagnosticCodes.has(item.code);
+  if(informational)notices.push({message:`${item.label}: ${item.error}`,...item});
+  else (recoverable?warnings:errors).push(item);
+  flush(menu);log(`${informational?'Observação':recoverable?'Aviso':'Falha'} em ${item.label}: ${item.error}`);log('Diagnóstico:',file);
+  return {recoverable:recoverable||informational};
  }
  try{
   browser=await launchBrowser();
@@ -109,10 +112,11 @@ async function main(options={}){
   menu=await ui.login(page,env,options.loginTimeoutMs||30000);
   authenticatedUrl=page.url().split('#')[0];
   readOnly=true;
-  network=attachNetworkMonitor(page,url=>ui.safeUrl(url,redact),message=>{
-   const warning={label:'interface',error:redact(message),code:'PAGE_SCRIPT_ERROR'};
-   warnings.push(warning);log(`Aviso: ${warning.error}`);
-  });
+  const recordScriptNotice=message=>{
+   const notice={message:redact(message),label:'interface',code:'PAGE_SCRIPT_ERROR'};
+   notices.push(notice);log(`Observação: ${notice.message}`);
+  };
+  network=attachNetworkMonitor(page,url=>ui.safeUrl(url,redact),recordScriptNotice);
   const resumeCurrent=async()=>{
    if(await ui.findLogin(page,{strict:true})){
     const message='A sessão expirou; autenticando novamente para continuar.';
@@ -154,10 +158,7 @@ async function main(options={}){
     menu=await ui.login(page,env,options.loginTimeoutMs||30000);
     authenticatedUrl=page.url().split('#')[0];
    }finally{readOnly=true}
-   network=attachNetworkMonitor(page,url=>ui.safeUrl(url,redact),message=>{
-    const warning={label:'interface',error:redact(message),code:'PAGE_SCRIPT_ERROR'};
-    warnings.push(warning);log(`Aviso: ${warning.error}`);
-   });
+   network=attachNetworkMonitor(page,url=>ui.safeUrl(url,redact),recordScriptNotice);
    network.reset('recuperação por nova sessão');
    if(!(await resumeCurrent()))throw new Error('A interface autenticada não ficou disponível durante a recuperação.');
   };
@@ -212,8 +213,8 @@ async function main(options={}){
   if(!traversal.visited)throw new Error('Nenhum menu pôde ser capturado. Consulte os diagnósticos da execução.');
   status=traversal.complete&&!errors.length?'complete':'partial';
  }catch(e){status='failed';await report('execução',e);throw new Error(`${errors.at(-1).error} Diagnóstico em: ${out}`);}
- finally{flush(menu);await browser?.close();log(status==='complete'?'Concluído:':status==='partial'?'Varredura parcial:':'Falha:',out,'capturas:',new Set(records.map(r=>r.image)).size,'erros:',errors.length,'avisos:',warnings.length)}
- return {out,run,status,complete:status==='complete',records:records.length,errors:errors.length,pending:traversal?.pending.length||0,warnings};
+ finally{flush(menu);await browser?.close();log(status==='complete'?'Concluído:':status==='partial'?'Varredura parcial:':'Falha:',out,'capturas:',new Set(records.map(r=>r.image)).size,'erros:',errors.length,'avisos:',warnings.length,'observações:',notices.length)}
+ return {out,run,status,complete:status==='complete',records:records.length,errors:errors.length,pending:traversal?.pending.length||0,warnings,notices};
 }
 if(require.main===module)main().catch(e=>{console.error('Falha:',e.message);process.exitCode=1});
 module.exports={main,slug,browserLaunchOptions,browserContextOptions,maximizePageWindow};

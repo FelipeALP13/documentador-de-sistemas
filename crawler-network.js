@@ -31,8 +31,8 @@ function attachNetworkMonitor(page, sanitizeUrl, onWarning = () => {}) {
   const monitor = {
     reset(label = '') { enabled = true; started = new WeakSet(); failures = []; actionLabel = label; reportedScripts = new Set(); },
     snapshot() { return failures.slice(); },
-    failure() {
-      const failure = failures.filter(item => !item.javascript).at(-1);
+    failure({ documentOnly = false } = {}) {
+      const failure = failures.filter(item => !item.javascript && (!documentOnly || item.type === 'document')).at(-1);
       if (!failure) return null;
       const message = failure.status ? `O servidor retornou HTTP ${failure.status} ao abrir ${failure.url}.` : `Falha de rede ao abrir ${failure.url}: ${failure.reason}.`;
       const code = failure.status >= 500 ? 'HTTP_5XX' : failure.status ? `HTTP_${failure.status}` : 'NETWORK_FAILURE';
